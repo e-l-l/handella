@@ -1,0 +1,42 @@
+{
+  "name": "handella",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first engineering orchestrator that turns incoming work into supervised Codex jobs.",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "npm@11.17.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @handella/contracts && npm run build --workspace @handella/dashboard && npm run build --workspace @handella/service",
+    "dev": "npm run build --workspace @handella/contracts && concurrently --kill-others-on-fail --names service,dashboard --prefix-colors cyan,magenta \"npm run dev --workspace @handella/service\" \"npm run dev --workspace @handella/dashboard\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "start": "npm run start --workspace @handella/service",
+    "test": "npm run build --workspace @handella/contracts && npm run test --workspaces --if-present",
+    "typecheck": "npm run build --workspace @handella/contracts && npm run typecheck --workspaces --if-present"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/e-l-l/handella.git"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^10.10.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "globals": "^16.4.0",
+    "prettier": "^3.6.2",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.46.1"
+  }
+}
