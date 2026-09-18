@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 
 import BetterSqlite3 from 'better-sqlite3'
 import { eq } from 'drizzle-orm'
-import { drizzle } from 'drizzle-orm/better-sqlite3'
+import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 
 import { appInstallation } from './schema.js'
@@ -20,8 +20,12 @@ export interface StatusSource {
   getStatus(): InstallationStatus
 }
 
+export type HandellaDatabase = BetterSQLite3Database<Record<string, never>>
+
 export interface DatabaseContext extends StatusSource {
   close(): void
+  /** The migrated connection, for the domain store to run its transactions on. */
+  drizzle: HandellaDatabase
   markStarted(startedAt?: Date): void
 }
 
@@ -82,6 +86,7 @@ export function openDatabase(options: OpenDatabaseOptions): DatabaseContext {
       close() {
         sqlite.close()
       },
+      drizzle: database,
       getStatus() {
         sqlite.prepare('select 1').get()
         const journalMode = String(

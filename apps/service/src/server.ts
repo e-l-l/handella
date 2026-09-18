@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
 import { defaultMigrationsPath, openDatabase } from './database/database.js'
+import { createStore } from './domain/store.js'
+import { createBroadcaster } from './events/broadcaster.js'
 
 interface PackageMetadata {
   version: string
@@ -32,7 +34,12 @@ async function main(): Promise<void> {
     databasePath: config.databasePath,
     migrationsPath: defaultMigrationsPath(config.repositoryRoot),
   })
-  const app = buildApp({
+  const broadcaster = createBroadcaster()
+  const store = createStore({ broadcaster, database: database.drizzle })
+
+  const app = await buildApp({
+    broadcaster,
+    store,
     ...(production ? { dashboardPath: config.dashboardPath } : {}),
     logger: production
       ? true

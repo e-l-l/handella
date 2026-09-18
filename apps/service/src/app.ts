@@ -1,92 +1,94 @@
 import fastifyStatic from '@fastify/static'
 import {
-  StatusErrorSchema,
-  StatusResponseSchema,
-  type StatusError,
-  type StatusResponse,
-} from '@handella/contracts'
-import Fastify, { type FastifyServerOptions } from 'fastify'
+  TypeBoxValidatorCompiler,
+  type TypeBoxTypeProvider,
+} from '@fastify/type-provider-typebox'
+import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 
 import type { StatusSource } from './database/database.js'
+import { DomainError } from './domain/errors.js'
+import type { Store } from './domain/store.js'
+import type { Broadcaster } from './events/broadcaster.js'
+import { attentionRoutes } from './routes/attention.js'
+import { eventRoutes } from './routes/events.js'
+import { jobRoutes } from './routes/jobs.js'
+import { statusRoutes } from './routes/status.js'
 
 interface BuildAppOptions {
+  broadcaster: Broadcaster
   dashboardPath?: string
   logger?: FastifyServerOptions['logger']
   startedAt?: Date
   statusSource: StatusSource
+  store: Store
   version: string
 }
 
-export function buildApp(options: BuildAppOptions) {
-  const app = Fastify({ logger: options.logger ?? false })
+const notFoundBody = (method: string, url: string) => ({
+  statusCode: 404,
+  error: 'Not Found',
+  message: `Route ${method}:${url} not found`,
+})
+
+export async function buildApp(options: BuildAppOptions) {
+  // The chain has to hang off the Fastify() call itself; assigning first and
+  // calling withTypeProvider afterwards throws the typed view away.
+  const app = Fastify({
+    // An open /api/events stream is never idle, so without this a shutdown
+    // waits for the Handler to close their browser tab before it completes.
+    forceCloseConnections: true,
+    logger: options.logger ?? false,
+  })
+    .setValidatorCompiler(TypeBoxValidatorCompiler)
+    .withTypeProvider<TypeBoxTypeProvider>()
+
   const startedAt = options.startedAt ?? new Date()
 
-  app.get<{ Reply: StatusError | StatusResponse }>(
-    '/api/status',
-    {
-      schema: {
-        response: {
-          200: StatusResponseSchema,
-          503: StatusErrorSchema,
-        },
-      },
-    },
-    async (request, reply) => {
-      try {
-        const status = options.statusSource.getStatus()
-        return {
-          status: 'ok',
-          version: options.version,
-          startedAt: startedAt.toISOString(),
-          uptimeSeconds: Math.max(
-            0,
-            (Date.now() - startedAt.getTime()) / 1_000,
-          ),
-          installation: {
-            id: status.id,
-            createdAt: status.createdAt.toISOString(),
-            lastStartedAt: status.lastStartedAt.toISOString(),
-          },
-          database: {
-            status: 'ok',
-            journalMode: status.journalMode,
-          },
-        }
-      } catch (error) {
-        request.log.error({ err: error }, 'Database status check failed')
-        return reply.code(503).send({
-          status: 'error',
-          code: 'database_unavailable',
-          message: 'Database unavailable',
-        })
-      }
-    },
-  )
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    if (error instanceof DomainError) {
+      return reply
+        .code(error.statusCode)
+        .send({ code: error.code, message: error.message })
+    }
+
+    if (error.validation !== undefined) {
+      return reply
+        .code(400)
+        .send({ code: 'validation_failed', message: error.message })
+    }
+
+    request.log.error({ err: error }, 'Unhandled request error')
+    return reply
+      .code(error.statusCode ?? 500)
+      .send({ code: 'internal_error', message: 'Internal Server Error' })
+  })
+
+  await app.register(statusRoutes, {
+    startedAt,
+    statusSource: options.statusSource,
+    version: options.version,
+  })
+  await app.register(jobRoutes, { store: options.store })
+  await app.register(attentionRoutes, { store: options.store })
+  await app.register(eventRoutes, { broadcaster: options.broadcaster })
 
   if (options.dashboardPath !== undefined) {
-    app.register(fastifyStatic, {
+    await app.register(fastifyStatic, {
       root: options.dashboardPath,
     })
   }
 
+  // The dashboard is a single-page app, so anything outside /api/ that the
+  // server does not recognise is a client-side route it should render.
   app.setNotFoundHandler((request, reply) => {
-    if (request.url.startsWith('/api/')) {
-      return reply.code(404).send({
-        statusCode: 404,
-        error: 'Not Found',
-        message: `Route ${request.method}:${request.url} not found`,
-      })
-    }
-
-    if (options.dashboardPath !== undefined) {
+    if (
+      options.dashboardPath !== undefined &&
+      !request.url.startsWith('/api/')
+    ) {
       return reply.type('text/html').sendFile('index.html')
     }
 
-    return reply.code(404).send({
-      statusCode: 404,
-      error: 'Not Found',
-      message: `Route ${request.method}:${request.url} not found`,
-    })
+    return reply.code(404).send(notFoundBody(request.method, request.url))
   })
 
   return app

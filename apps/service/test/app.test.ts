@@ -1,39 +1,22 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { buildApp } from '../src/app.js'
-import type { StatusSource } from '../src/database/database.js'
+import {
+  aTemporaryDirectory,
+  buildTestApp,
+  cleanupTestContexts,
+  createTestContext,
+} from './helpers.js'
 
-const healthyStatusSource: StatusSource = {
-  getStatus: () => ({
-    id: '123e4567-e89b-42d3-a456-426614174000',
-    createdAt: new Date('2026-09-18T09:00:00.000Z'),
-    lastStartedAt: new Date('2026-09-18T10:00:00.000Z'),
-    journalMode: 'wal',
-  }),
-}
-
-const appsToClose: Array<ReturnType<typeof buildApp>> = []
-const temporaryDirectories: string[] = []
-
-afterEach(async () => {
-  await Promise.all(appsToClose.splice(0).map((app) => app.close()))
-  for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { force: true, recursive: true })
-  }
-})
+afterEach(cleanupTestContexts)
 
 describe('Handella service', () => {
   it('returns the shared system status contract', async () => {
-    const app = buildApp({
+    const { app } = await buildTestApp({
       startedAt: new Date('2026-09-18T10:00:00.000Z'),
-      statusSource: healthyStatusSource,
-      version: '0.1.0',
     })
-    appsToClose.push(app)
 
     const response = await app.inject({ method: 'GET', url: '/api/status' })
 
@@ -49,15 +32,13 @@ describe('Handella service', () => {
   })
 
   it('returns a safe 503 when the database check fails', async () => {
-    const app = buildApp({
+    const { app } = await buildTestApp({
       statusSource: {
         getStatus() {
           throw new Error('sensitive database detail')
         },
       },
-      version: '0.1.0',
     })
-    appsToClose.push(app)
 
     const response = await app.inject({ method: 'GET', url: '/api/status' })
 
@@ -70,12 +51,30 @@ describe('Handella service', () => {
     expect(response.body).not.toContain('sensitive database detail')
   })
 
-  it('keeps missing API routes as JSON', async () => {
-    const app = buildApp({
-      statusSource: healthyStatusSource,
-      version: '0.1.0',
+  it('reports an unhandled failure as an internal error, not a bad request', async () => {
+    const context = createTestContext()
+    const { app } = await buildTestApp({
+      context,
+      store: {
+        ...context.store,
+        listJobs() {
+          throw new Error('sensitive internal detail')
+        },
+      },
     })
-    appsToClose.push(app)
+
+    const response = await app.inject({ method: 'GET', url: '/api/jobs' })
+
+    expect(response.statusCode).toBe(500)
+    expect(response.json()).toEqual({
+      code: 'internal_error',
+      message: 'Internal Server Error',
+    })
+    expect(response.body).not.toContain('sensitive internal detail')
+  })
+
+  it('keeps missing API routes as JSON', async () => {
+    const { app } = await buildTestApp()
 
     const response = await app.inject({ method: 'GET', url: '/api/missing' })
 
@@ -84,19 +83,13 @@ describe('Handella service', () => {
   })
 
   it('serves the SPA fallback for client-side routes', async () => {
-    const dashboardPath = mkdtempSync(join(tmpdir(), 'handella-dashboard-'))
-    temporaryDirectories.push(dashboardPath)
+    const dashboardPath = aTemporaryDirectory('handella-dashboard-')
     writeFileSync(
       join(dashboardPath, 'index.html'),
       '<main>Handella shell</main>',
     )
 
-    const app = buildApp({
-      dashboardPath,
-      statusSource: healthyStatusSource,
-      version: '0.1.0',
-    })
-    appsToClose.push(app)
+    const { app } = await buildTestApp({ dashboardPath })
     const response = await app.inject({ method: 'GET', url: '/system' })
 
     expect(response.statusCode).toBe(200)

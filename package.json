@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @handella/contracts && npm run build --workspace @handella/dashboard && npm run build --workspace @handella/service",
-    "dev": "npm run build --workspace @handella/contracts && concurrently --kill-others-on-fail --names service,dashboard --prefix-colors cyan,magenta \"npm run dev --workspace @handella/service\" \"npm run dev --workspace @handella/dashboard\"",
+    "dev": "npm run build --workspace @handella/contracts && concurrently --kill-others-on-fail --names contracts,service,dashboard --prefix-colors gray,cyan,magenta \"npm run dev --workspace @handella/contracts\" \"npm run dev --workspace @handella/service\" \"npm run dev --workspace @handella/dashboard\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",

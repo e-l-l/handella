@@ -1,13 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { fetchSystemStatus } from '../api/status.ts'
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'medium',
-  }).format(new Date(value))
-}
+import { formatTimestamp } from '../labels.ts'
 
 function formatUptime(value: number): string {
   const seconds = Math.max(0, Math.floor(value))
@@ -157,13 +151,13 @@ export function SystemStatusPage() {
               <div>
                 <dt className="text-muted">Created</dt>
                 <dd className="mt-1 font-medium">
-                  {formatDate(statusQuery.data.installation.createdAt)}
+                  {formatTimestamp(statusQuery.data.installation.createdAt)}
                 </dd>
               </div>
               <div>
                 <dt className="text-muted">Last started</dt>
                 <dd className="mt-1 font-medium">
-                  {formatDate(statusQuery.data.installation.lastStartedAt)}
+                  {formatTimestamp(statusQuery.data.installation.lastStartedAt)}
                 </dd>
               </div>
             </dl>

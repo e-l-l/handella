@@ -1,10 +1,8 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router'
 import { describe, expect, it, vi } from 'vitest'
 
-import App from './App.tsx'
+import { renderAt } from './test/renderApp.tsx'
 
 const status = {
   status: 'ok',
@@ -19,26 +17,13 @@ const status = {
   database: { status: 'ok', journalMode: 'wal' },
 }
 
-function renderApp() {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/system']}>
-        <App />
-      </MemoryRouter>
-    </QueryClientProvider>,
-  )
-}
-
 describe('system status page', () => {
   it('shows a loading state while the service responds', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(() => new Promise(() => undefined)),
     )
-    renderApp()
+    renderAt('/system')
     expect(screen.getByLabelText('Checking service status')).toBeInTheDocument()
   })
 
@@ -52,7 +37,7 @@ describe('system status page', () => {
         }),
       ),
     )
-    renderApp()
+    renderAt('/system')
 
     expect(await screen.findByText('All systems local')).toBeInTheDocument()
     expect(screen.getByText('SQLite ready')).toBeInTheDocument()
@@ -77,7 +62,7 @@ describe('system status page', () => {
       )
     vi.stubGlobal('fetch', fetchMock)
     const user = userEvent.setup()
-    renderApp()
+    renderAt('/system')
 
     expect(await screen.findByText('Service unavailable')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Try again' }))

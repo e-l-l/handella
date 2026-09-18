@@ -1,6 +1,17 @@
-import { Navigate, Route, Routes } from 'react-router'
+import { NavLink, Route, Routes } from 'react-router'
 
+import { useEventStream } from './hooks/useEventStream.ts'
+import { AttentionInboxPage } from './pages/AttentionInboxPage.tsx'
+import { JobDetailPage } from './pages/JobDetailPage.tsx'
+import { JobsPage } from './pages/JobsPage.tsx'
+import { NotFoundPage } from './pages/NotFoundPage.tsx'
 import { SystemStatusPage } from './pages/SystemStatusPage.tsx'
+
+const navigation = [
+  { label: 'Inbox', to: '/' },
+  { label: 'Jobs', to: '/jobs' },
+  { label: 'System', to: '/system' },
+]
 
 function BrandMark() {
   return (
@@ -25,14 +36,24 @@ function AppShell({ children }: { children: React.ReactNode }) {
               <p className="text-xs text-muted">Local orchestrator</p>
             </div>
           </div>
-          <nav aria-label="Primary navigation">
-            <a
-              aria-current="page"
-              className="rounded-full bg-brand-soft px-3 py-1.5 text-sm font-medium text-brand ring-1 ring-brand/10"
-              href="/system"
-            >
-              System
-            </a>
+          <nav
+            aria-label="Primary navigation"
+            className="flex items-center gap-1"
+          >
+            {navigation.map((item) => (
+              <NavLink
+                className={({ isActive }) =>
+                  isActive
+                    ? 'rounded-full bg-brand-soft px-3 py-1.5 text-sm font-medium text-brand ring-1 ring-brand/10'
+                    : 'rounded-full px-3 py-1.5 text-sm font-medium text-muted'
+                }
+                end={item.to === '/'}
+                key={item.to}
+                to={item.to}
+              >
+                {item.label}
+              </NavLink>
+            ))}
           </nav>
         </div>
       </header>
@@ -42,30 +63,17 @@ function AppShell({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
+  // One stream for the whole shell; every page reads through the query cache.
+  useEventStream()
+
   return (
     <AppShell>
       <Routes>
-        <Route path="/" element={<Navigate replace to="/system" />} />
+        <Route path="/" element={<AttentionInboxPage />} />
+        <Route path="/jobs" element={<JobsPage />} />
+        <Route path="/jobs/:jobId" element={<JobDetailPage />} />
         <Route path="/system" element={<SystemStatusPage />} />
-        <Route
-          path="*"
-          element={
-            <section className="mx-auto max-w-3xl px-5 py-24 text-center sm:px-8">
-              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-brand">
-                404
-              </p>
-              <h1 className="mt-3 text-3xl font-semibold tracking-tight">
-                That room is not in the house yet.
-              </h1>
-              <a
-                className="mt-7 inline-flex rounded-full bg-brand px-4 py-2 text-sm font-semibold text-white"
-                href="/system"
-              >
-                Back to system status
-              </a>
-            </section>
-          }
-        />
+        <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </AppShell>
   )

@@ -47,7 +47,7 @@ Unknown `.env` keys, invalid values, and group/world-readable `.env` files stop 
 
 | Command                | Purpose                                              |
 | ---------------------- | ---------------------------------------------------- |
-| `npm run dev`          | Start dashboard and service with reload support      |
+| `npm run dev`          | Start contracts, service, and dashboard with reload  |
 | `npm run build`        | Build contracts, dashboard, and service              |
 | `npm start`            | Start the previously built single-origin application |
 | `npm test`             | Run focused tests across all workspaces              |
