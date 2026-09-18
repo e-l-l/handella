@@ -1,5 +1,6 @@
 import { Type, type Static } from 'typebox'
 
+import { LinearIdSchema } from './linear.js'
 import {
   IsoDateTimeSchema,
   Nullable,
@@ -64,6 +65,31 @@ export type TransitionActor = (typeof transitionActors)[number]
 
 export const TransitionActorSchema = literalUnion(transitionActors)
 
+/** Where a job starts from when the Handler has said nothing else. */
+export const defaultBaseBranch = 'dev'
+
+/**
+ * Git's own bound on a ref name, spelled once: a Job's base branch, the
+ * Canonical Branch it works on, and the branch Intake plans for it are all the
+ * same kind of string, and three spellings of the bound are three chances for
+ * one path to accept a name another rejects.
+ */
+export const BranchNameSchema = Type.String({ minLength: 1, maxLength: 255 })
+
+/**
+ * ADR 0004: the first Job for an issue takes Linear's branch name verbatim,
+ * and every repeat appends its round number.
+ *
+ * One implementation, because the rule is applied three times over a Job's
+ * life — Intake shows the Handler the name, Intake writes it, and Dispatch
+ * computes it again to claim it — and three spellings of it are three chances
+ * for them to disagree.
+ */
+export const canonicalBranchForRound = (
+  branchName: string,
+  round: number,
+): string => (round === 1 ? branchName : `${branchName}-${round}`)
+
 export const JobSchema = Type.Object(
   {
     id: UuidSchema,
@@ -72,9 +98,24 @@ export const JobSchema = Type.Object(
     workClass: WorkClassSchema,
     state: JobStateSchema,
     suspension: Nullable(JobSuspensionSchema),
-    linearIssueKey: Nullable(Type.String({ minLength: 1, maxLength: 64 })),
-    canonicalBranch: Nullable(Type.String({ minLength: 1, maxLength: 255 })),
-    baseBranch: Type.String({ minLength: 1, maxLength: 255 }),
+    linearIssueKey: Nullable(LinearIdSchema),
+    /**
+     * Linear's own id for the issue, and the authoritative link. The
+     * identifier in `linearIssueKey` is what the Handler reads, but Linear
+     * reassigns it when an issue moves team, so nothing looks a job up by it.
+     */
+    linearIssueId: Nullable(LinearIdSchema),
+    linearIssueUrl: Nullable(Type.String({ minLength: 1, maxLength: 2048 })),
+    /**
+     * Linear's branch name for the issue, suffixed from the second Job
+     * onwards. Provisional until Dispatch: ADR 0004 has Intake compute it so
+     * the Handler sees the real name before committing to it, and Dispatch
+     * compute it again — another Job for the same issue may have started in
+     * between — and only then fix it. Phase 4 recomputes rather than claims
+     * what it reads here.
+     */
+    canonicalBranch: Nullable(BranchNameSchema),
+    baseBranch: BranchNameSchema,
     queuePriority: Nullable(Type.Integer()),
     worktreePath: Nullable(Type.String()),
     codexSessionId: Nullable(Type.String()),
@@ -87,18 +128,27 @@ export const JobSchema = Type.Object(
 
 export type Job = Static<typeof JobSchema>
 
+/**
+ * The recovery path: a job made by hand when intake itself is unavailable.
+ *
+ * Deliberately cannot carry `linearIssueId`. That column is what links a Job
+ * to its issue, what the live-job index is keyed on, and what ADR 0004 counts
+ * rounds by, so accepting it here would let the browser mint a link that
+ * skipped the live-job check and the suffix alike — and surface the index as
+ * an untyped constraint failure rather than a typed conflict. Intake is the
+ * only path that links a Job to a Linear issue.
+ */
 export const CreateJobSchema = Type.Object(
   {
     source: JobSourceSchema,
     title: Type.String({ minLength: 1, maxLength: 500 }),
     workClass: WorkClassSchema,
-    baseBranch: Type.String({ minLength: 1, maxLength: 255, default: 'dev' }),
-    linearIssueKey: Type.Optional(
-      Nullable(Type.String({ minLength: 1, maxLength: 64 })),
-    ),
-    canonicalBranch: Type.Optional(
-      Nullable(Type.String({ minLength: 1, maxLength: 255 })),
-    ),
+    baseBranch: Type.String({
+      ...BranchNameSchema,
+      default: defaultBaseBranch,
+    }),
+    linearIssueKey: Type.Optional(Nullable(LinearIdSchema)),
+    canonicalBranch: Type.Optional(Nullable(BranchNameSchema)),
   },
   { additionalProperties: false, $id: 'CreateJob' },
 )

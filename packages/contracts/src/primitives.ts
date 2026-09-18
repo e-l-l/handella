@@ -9,8 +9,11 @@ export const UuidSchema = Type.String({
     '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$',
 })
 
-type LiteralMembers<Values extends readonly string[]> = {
-  -readonly [Index in keyof Values]: TLiteral<Values[Index] & string>
+/** What `Type.Literal` accepts, and so what a tuple below may hold. */
+type LiteralValue = string | number
+
+type LiteralMembers<Values extends readonly LiteralValue[]> = {
+  -readonly [Index in keyof Values]: TLiteral<Values[Index] & LiteralValue>
 }
 
 /**
@@ -23,7 +26,7 @@ type LiteralMembers<Values extends readonly string[]> = {
  * into several records, and Fastify refuses to compile a serializer whose
  * schema graph resolves one `$id` to more than one schema.
  */
-export const literalUnion = <const Values extends readonly string[]>(
+export const literalUnion = <const Values extends readonly LiteralValue[]>(
   values: Values,
 ): TUnion<LiteralMembers<Values>> =>
   Type.Union(
@@ -38,9 +41,9 @@ export const literalUnion = <const Values extends readonly string[]>(
  * keeps every guard built from it cast-free.
  */
 export const isOneOf =
-  <const Values extends readonly string[]>(values: Values) =>
-  (value: string): value is Values[number] =>
-    (values as readonly string[]).includes(value)
+  <const Values extends readonly LiteralValue[]>(values: Values) =>
+  (value: LiteralValue): value is Values[number] =>
+    (values as readonly LiteralValue[]).includes(value)
 
 export const Nullable = <Schema extends TSchema>(schema: Schema) =>
   Type.Union([schema, Type.Null()])

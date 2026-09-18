@@ -2,20 +2,10 @@ import { screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
+import { aStatus } from './test/fixtures.ts'
 import { renderAt } from './test/renderApp.tsx'
 
-const status = {
-  status: 'ok',
-  version: '0.1.0',
-  startedAt: '2026-09-18T10:00:00.000Z',
-  uptimeSeconds: 93,
-  installation: {
-    id: '123e4567-e89b-42d3-a456-426614174000',
-    createdAt: '2026-09-18T09:00:00.000Z',
-    lastStartedAt: '2026-09-18T10:00:00.000Z',
-  },
-  database: { status: 'ok', journalMode: 'wal' },
-}
+const status = aStatus()
 
 describe('system status page', () => {
   it('shows a loading state while the service responds', () => {

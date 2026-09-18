@@ -2,6 +2,8 @@ import type {
   AttentionItemKind,
   JobState,
   JobSuspension,
+  LinearPriority,
+  WorkClass,
 } from '@handella/contracts'
 
 export const stateLabels: Record<JobState, string> = {
@@ -23,6 +25,20 @@ export const suspensionLabels: Record<JobSuspension, string> = {
   stoppedByHandler: 'Suspended — you stopped this job',
   stoppedBySystem: 'Suspended — Handella stopped this job',
   interrupted: 'Suspended — interrupted by a restart',
+}
+
+export const workClassLabels: Record<WorkClass, string> = {
+  feature: 'Feature',
+  routine: 'Routine',
+}
+
+/** Linear's scale, which runs the opposite way to most: 0 is no priority. */
+export const linearPriorityLabels: Record<LinearPriority, string> = {
+  0: 'No priority',
+  1: 'Urgent',
+  2: 'High',
+  3: 'Medium',
+  4: 'Low',
 }
 
 export const attentionKindLabels: Record<AttentionItemKind, string> = {

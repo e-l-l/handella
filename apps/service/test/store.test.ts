@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { DomainError } from '../src/domain/errors.js'
+import type { Store } from '../src/domain/store.js'
 import {
   aDispatchableJob,
+  aLinearIssueLink,
   anIntakeJob,
   aReviewRound,
   aRunbookSnapshot,
@@ -356,5 +358,227 @@ describe('the full lifecycle', () => {
     expect(store.getJob(job.id).state).toBe('archived')
     expect(store.listJobTransitions(job.id)).toHaveLength(path.length)
     expect(store.listAttentionItems()).toEqual([])
+  })
+})
+
+describe('creating a job for a Linear issue', () => {
+  it('announces the new job exactly once', () => {
+    const context = createTestContext()
+
+    const job = context.store.createJobForLinearIssue({
+      baseBranch: 'dev',
+      issue: aLinearIssueLink(),
+      source: 'linear',
+      workClass: 'routine',
+    })
+
+    expect(context.published).toEqual([
+      {
+        name: 'job.changed',
+        data: { jobId: job.id, state: 'intake', suspension: null },
+      },
+    ])
+  })
+
+  it('takes its title and its branch from Linear, not from the caller', () => {
+    const { store } = createTestContext()
+
+    const job = store.createJobForLinearIssue({
+      baseBranch: 'main',
+      issue: aLinearIssueLink(),
+      source: 'adhoc',
+      workClass: 'feature',
+    })
+
+    expect(job).toMatchObject({
+      source: 'adhoc',
+      title: 'Fix the flaky login test',
+      linearIssueKey: 'ENG-412',
+      canonicalBranch: 'ell/eng-412-fix-flaky-login-test',
+    })
+  })
+
+  it('refuses a second live job for one issue', () => {
+    const { store } = createTestContext()
+    store.createJobForLinearIssue({
+      baseBranch: 'dev',
+      issue: aLinearIssueLink(),
+      source: 'linear',
+      workClass: 'routine',
+    })
+
+    expect(() =>
+      store.createJobForLinearIssue({
+        baseBranch: 'dev',
+        issue: aLinearIssueLink(),
+        source: 'linear',
+        workClass: 'routine',
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: 'linear_issue_already_linked' }) as Error,
+    )
+  })
+
+  it('keys that refusal on the issue id, not the identifier Linear rewrites', () => {
+    const { store } = createTestContext()
+    store.createJobForLinearIssue({
+      baseBranch: 'dev',
+      issue: aLinearIssueLink(),
+      source: 'linear',
+      workClass: 'routine',
+    })
+
+    // The same issue after it moved team: new identifier, new branch name.
+    expect(() =>
+      store.createJobForLinearIssue({
+        baseBranch: 'dev',
+        issue: aLinearIssueLink({
+          identifier: 'OPS-7',
+          branchName: 'ell/ops-7-fix-flaky-login-test',
+        }),
+        source: 'linear',
+        workClass: 'routine',
+      }),
+    ).toThrowError(
+      expect.objectContaining({ code: 'linear_issue_already_linked' }) as Error,
+    )
+  })
+
+  it('never reuses a branch name, even after a cancellation', () => {
+    const { store } = createTestContext()
+
+    const first = store.createJobForLinearIssue({
+      baseBranch: 'dev',
+      issue: aLinearIssueLink(),
+      source: 'linear',
+      workClass: 'routine',
+    })
+    store.transitionJob({ actor: 'handler', jobId: first.id, to: 'cancelled' })
+
+    const second = store.createJobForLinearIssue({
+      baseBranch: 'dev',
+      issue: aLinearIssueLink(),
+      source: 'linear',
+      workClass: 'routine',
+    })
+
+    expect(second.canonicalBranch).toBe('ell/eng-412-fix-flaky-login-test-2')
+  })
+})
+
+describe('base branch suggestions', () => {
+  it('reports the default separately and never repeats it', () => {
+    const { store } = createTestContext()
+    store.createJob(anIntakeJob({ baseBranch: 'dev' }))
+
+    expect(store.listBaseBranchSuggestions()).toEqual({
+      defaultBranch: 'dev',
+      recent: [],
+    })
+  })
+
+  it('lists each branch once, most recently used first', () => {
+    // Jobs created in one millisecond tie on `createdAt`, and a tie has no
+    // honest order, so the clock is the test's to move.
+    let tick = 0
+    const { store } = createTestContext({
+      now: () => new Date(Date.UTC(2026, 8, 18, 10, 0, tick++)),
+    })
+    for (const baseBranch of ['main', 'release/24', 'main']) {
+      store.createJob(anIntakeJob({ baseBranch }))
+    }
+
+    expect(store.listBaseBranchSuggestions().recent).toEqual([
+      'main',
+      'release/24',
+    ])
+  })
+
+  it('offers only as many as it was asked for', () => {
+    const { store } = createTestContext()
+
+    for (const baseBranch of ['main', 'release/24', 'release/25']) {
+      store.createJob(anIntakeJob({ baseBranch }))
+    }
+
+    expect(store.listBaseBranchSuggestions({ limit: 2 }).recent).toHaveLength(2)
+  })
+
+  it('never lets the default eat one of the suggestions asked for', () => {
+    let tick = 0
+    const { store } = createTestContext({
+      now: () => new Date(Date.UTC(2026, 8, 18, 10, 0, tick++)),
+    })
+
+    // The default is the most recently used, so excluding it after the limit
+    // rather than before would answer with one branch instead of two.
+    for (const baseBranch of ['release/25', 'release/24', 'main', 'dev']) {
+      store.createJob(anIntakeJob({ baseBranch }))
+    }
+
+    expect(store.listBaseBranchSuggestions({ limit: 2 }).recent).toEqual([
+      'main',
+      'release/24',
+    ])
+  })
+})
+
+describe('describing the issues intake is about to offer', () => {
+  const anIssue = (id: string) =>
+    aLinearIssueLink({
+      branchName: `ell/eng-${id}-something`,
+      id,
+      identifier: `ENG-${id}`,
+      title: 'Something',
+      url: `https://linear.app/acme/issue/ENG-${id}`,
+    })
+
+  const take = (store: Store, id: string) =>
+    store.createJobForLinearIssue({
+      baseBranch: 'dev',
+      issue: anIssue(id),
+      source: 'linear',
+      workClass: 'routine',
+    })
+
+  it('answers an untouched issue with round one and no holder', () => {
+    const { store } = createTestContext()
+
+    expect(store.describeIssuesForIntake(['1']).get('1')).toEqual({
+      heldByJobId: null,
+      nextRound: 1,
+    })
+  })
+
+  it('names the live job holding an issue', () => {
+    const { store } = createTestContext()
+    const job = take(store, '1')
+
+    expect(store.describeIssuesForIntake(['1']).get('1')).toEqual({
+      heldByJobId: job.id,
+      nextRound: 2,
+    })
+  })
+
+  it('still counts a settled job, though it holds nothing', () => {
+    const { store } = createTestContext()
+    const job = take(store, '1')
+    store.transitionJob({ actor: 'handler', jobId: job.id, to: 'cancelled' })
+
+    // ADR 0004: cancelling never frees a branch name for reuse.
+    expect(store.describeIssuesForIntake(['1']).get('1')).toEqual({
+      heldByJobId: null,
+      nextRound: 2,
+    })
+  })
+
+  it('answers for every issue it was given, in one read', () => {
+    const { store } = createTestContext()
+    take(store, '1')
+
+    const facts = store.describeIssuesForIntake(['1', '2'])
+
+    expect(facts.get('2')).toEqual({ heldByJobId: null, nextRound: 1 })
+    expect(facts.has('3')).toBe(false)
   })
 })

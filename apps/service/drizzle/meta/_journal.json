@@ -15,6 +15,13 @@
       "when": 1789724151970,
       "tag": "0001_talented_carlie_cooper",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1789730132309,
+      "tag": "0002_blue_namorita",
+      "breakpoints": true
     }
   ]
 }

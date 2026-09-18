@@ -16,6 +16,20 @@ export const StatusResponseSchema = Type.Object(
       },
       { additionalProperties: false },
     ),
+    /**
+     * What the Handler still has to set up. An integration Handella can run
+     * without is reported here rather than refused at startup, so the
+     * dashboard can offer a setup notice instead of a failed request.
+     */
+    integrations: Type.Object(
+      {
+        linear: Type.Object(
+          { configured: Type.Boolean() },
+          { additionalProperties: false },
+        ),
+      },
+      { additionalProperties: false },
+    ),
     database: Type.Object(
       {
         status: Type.Literal('ok'),

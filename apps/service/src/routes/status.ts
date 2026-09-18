@@ -6,9 +6,11 @@ import {
 } from '@handella/contracts'
 import type { FastifyPluginCallback } from 'fastify'
 
+import type { LinearAdapter } from '../adapters/linear.js'
 import type { StatusSource } from '../database/database.js'
 
 interface StatusRouteOptions {
+  linear: LinearAdapter
   startedAt: Date
   statusSource: StatusSource
   version: string
@@ -44,6 +46,9 @@ export const statusRoutes: FastifyPluginCallback<StatusRouteOptions> = (
             id: status.id,
             createdAt: status.createdAt.toISOString(),
             lastStartedAt: status.lastStartedAt.toISOString(),
+          },
+          integrations: {
+            linear: { configured: options.linear.configured },
           },
           database: {
             status: 'ok',

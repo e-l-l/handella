@@ -32,6 +32,33 @@ One unit of work Handella supervises from intake to a merged pull request,
 owning a single canonical branch.
 _Avoid_: Task, ticket, run
 
+**Source**:
+Where the Handler's request came from: an issue already assigned to them, a
+conversation they forwarded, or something they wrote themselves. It does not
+record whether a Linear issue exists, because every Job has one.
+_Avoid_: Type, channel, origin
+
+**Actionable Issue**:
+A Linear issue with work left in it: one whose Workflow State belongs to any
+category except the three that end its life. A duplicate is not one, because its
+work lives on the issue it duplicates. An Actionable Issue assigned to the
+Handler is what Intake offers.
+_Avoid_: Open issue, active issue
+
+**Workflow State**:
+Where an issue sits in one Linear team's process, named by the team that defined
+it: In Review and In Dev (QA) are two of them. Every state belongs to one of
+Linear's fixed categories, and one category can hold many states, so a category
+is what Handella decides actionability by and a state is what the Handler reads
+and filters by. States belong to a team and their names repeat across teams, so
+a state only means something alongside the team it came from.
+_Avoid_: Stage, column
+
+**Intake**:
+Turning an Actionable Issue, existing or newly created, into a Job. It precedes
+Dispatch and commits nothing but the Job record.
+_Avoid_: Import, ingest, triage
+
 **Work Class**:
 Whether a Job is a Feature, which needs an interactive planning interview, or a
 Routine, which Handella can plan on its own.
@@ -73,6 +100,8 @@ worktree, and placing it in the queue.
 _Avoid_: Start, launch, submit
 
 **Canonical Branch**:
-The branch name Linear assigns to an issue. It is authoritative, and a Job
-cannot be dispatched without it.
+Linear's branch name for an issue, owned by one Job and fixed when that Job is
+Dispatched. An issue worked more than once gives each Job its own branch, so the
+name carries a numbered suffix from the second onwards. It is authoritative, and
+a Job cannot be dispatched without it.
 _Avoid_: Feature branch, working branch

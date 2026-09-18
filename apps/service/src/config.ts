@@ -7,6 +7,7 @@ import { repositoryRoot } from './paths.js'
 
 const allowedEnvironmentKeys = new Set([
   'HANDELLA_DATABASE_PATH',
+  'HANDELLA_LINEAR_API_KEY',
   'HANDELLA_PORT',
 ])
 
@@ -14,6 +15,8 @@ export interface AppConfig {
   databasePath: string
   dashboardPath: string
   host: '127.0.0.1'
+  /** Absent when the Handler has not set one. Intake is then unavailable, but Handella still starts. */
+  linearApiKey: string | undefined
   port: number
   repositoryRoot: string
 }
@@ -71,6 +74,17 @@ function parsePort(value: string | undefined): number {
   return port
 }
 
+/**
+ * Unlike the database path, an empty value here is not a failure. The Handler
+ * has simply not finished setting Linear up, and the dashboard says so;
+ * refusing to start would take the rest of Handella down with an optional
+ * integration.
+ */
+function parseLinearApiKey(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed === undefined || trimmed === '' ? undefined : trimmed
+}
+
 export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
   const rootDirectory = options.rootDirectory ?? repositoryRoot
   const environment = options.environment ?? process.env
@@ -93,6 +107,7 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     databasePath,
     dashboardPath: join(rootDirectory, 'apps/dashboard/dist'),
     host: '127.0.0.1',
+    linearApiKey: parseLinearApiKey(valueFor('HANDELLA_LINEAR_API_KEY')),
     port: parsePort(valueFor('HANDELLA_PORT')),
     repositoryRoot: rootDirectory,
   }

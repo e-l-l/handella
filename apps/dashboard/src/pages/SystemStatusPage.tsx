@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 
-import { fetchSystemStatus } from '../api/status.ts'
+import { fetchSystemStatus, statusKeys } from '../api/status.ts'
 import { formatTimestamp } from '../labels.ts'
 
 function formatUptime(value: number): string {
@@ -30,7 +30,7 @@ function LoadingState() {
 
 export function SystemStatusPage() {
   const statusQuery = useQuery({
-    queryKey: ['system-status'],
+    queryKey: statusKeys.current,
     queryFn: fetchSystemStatus,
     refetchInterval: 30_000,
   })

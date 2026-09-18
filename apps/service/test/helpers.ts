@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import type { CreateJob, DomainEvent } from '@handella/contracts'
 
 import { buildApp } from '../src/app.js'
+import { createFakeLinearAdapter } from './linear-fake.js'
 import {
   defaultMigrationsPath,
   openDatabase,
@@ -41,7 +42,14 @@ export function aTemporaryDirectory(prefix: string): string {
   return directory
 }
 
-export function createTestContext(): TestContext {
+interface TestContextOptions {
+  /** A store built on a clock the test drives, for ordering that a shared millisecond would otherwise decide. */
+  now?: () => Date
+}
+
+export function createTestContext(
+  options: TestContextOptions = {},
+): TestContext {
   const directory = aTemporaryDirectory('handella-test-')
 
   const database = openDatabase({
@@ -64,7 +72,11 @@ export function createTestContext(): TestContext {
     broadcaster,
     database,
     published,
-    store: createStore({ broadcaster, database: database.drizzle }),
+    store: createStore({
+      broadcaster,
+      database: database.drizzle,
+      ...(options.now === undefined ? {} : { now: options.now }),
+    }),
   }
 }
 
@@ -90,6 +102,7 @@ export async function buildTestApp(
   const context = given ?? createTestContext()
   const app = await buildApp({
     broadcaster: context.broadcaster,
+    linear: createFakeLinearAdapter(),
     statusSource: healthyStatusSource,
     store: context.store,
     version: '0.1.0',
@@ -108,6 +121,8 @@ export async function cleanupTestContexts(): Promise<void> {
     rmSync(directory, { force: true, recursive: true })
   }
 }
+
+export * from './linear-fake.js'
 
 export const anIntakeJob = (overrides: Partial<CreateJob> = {}): CreateJob => ({
   source: 'adhoc',

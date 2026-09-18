@@ -4,6 +4,7 @@ import {
   jobStates,
   jobSuspensions,
   planApprovalStates,
+  settledJobStates,
   transitionActors,
   workClasses,
 } from '@handella/contracts'
@@ -49,9 +50,12 @@ export const appInstallation = sqliteTable(
 )
 
 /**
- * `linear_issue_key` and `canonical_branch` are nullable because intake
- * genuinely precedes dispatch: a job exists before Linear has been asked for
- * its canonical branch name, and dispatch is what requires one.
+ * The Linear columns and `canonical_branch` are nullable because a job can be
+ * created without an issue: `POST /api/jobs` is the Handler's recovery path
+ * when intake itself is unavailable, and such a job cannot be queued.
+ *
+ * `linear_issue_id` rather than `linear_issue_key` is what a job is looked up
+ * by: Linear reassigns the identifier when an issue moves team.
  *
  * `state` and `suspension` are orthogonal. See
  * docs/adr/0003-orthogonal-job-state-and-suspension.md.
@@ -66,6 +70,8 @@ export const jobs = sqliteTable(
     state: text('state', { enum: jobStates }).notNull(),
     suspension: text('suspension', { enum: jobSuspensions }),
     linearIssueKey: text('linear_issue_key'),
+    linearIssueId: text('linear_issue_id'),
+    linearIssueUrl: text('linear_issue_url'),
     canonicalBranch: text('canonical_branch'),
     baseBranch: text('base_branch').notNull(),
     queuePriority: integer('queue_priority'),
@@ -83,8 +89,24 @@ export const jobs = sqliteTable(
       'jobs_suspension_check',
       nullOrOneOf(table.suspension, jobSuspensions),
     ),
+    /**
+     * A Linear issue belongs to at most one job that is still alive. Partial
+     * on two counts: a job may have no Linear issue at all, and a settled job
+     * gives its issue back so the Handler can take it again after the issue
+     * is reopened. The store checks the same thing first, so the Handler gets
+     * a typed conflict rather than a constraint violation; this is only the
+     * backstop.
+     */
+    uniqueIndex('jobs_live_linear_issue_id_unique')
+      .on(table.linearIssueId)
+      .where(
+        sql`${table.linearIssueId} is not null and ${table.state} not in (${sql.raw(
+          settledJobStates.map((state) => `'${state}'`).join(', '),
+        )})`,
+      ),
     index('jobs_state_suspension_idx').on(table.state, table.suspension),
     index('jobs_created_at_idx').on(table.createdAt),
+    index('jobs_linear_issue_key_idx').on(table.linearIssueKey),
   ],
 )
 

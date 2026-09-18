@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
+import { unconfiguredLinearAdapter } from './adapters/linear.js'
 import { buildApp } from './app.js'
 import { loadConfig } from './config.js'
 import { defaultMigrationsPath, openDatabase } from './database/database.js'
@@ -37,8 +38,18 @@ async function main(): Promise<void> {
   const broadcaster = createBroadcaster()
   const store = createStore({ broadcaster, database: database.drizzle })
 
+  // Imported only when there is a key, so an installation without one never
+  // depends on the Linear SDK loading cleanly.
+  const linear =
+    config.linearApiKey === undefined
+      ? unconfiguredLinearAdapter
+      : (await import('./adapters/linear-sdk.js')).createLinearAdapter({
+          apiKey: config.linearApiKey,
+        })
+
   const app = await buildApp({
     broadcaster,
+    linear,
     store,
     ...(production ? { dashboardPath: config.dashboardPath } : {}),
     logger: production

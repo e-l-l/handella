@@ -2,6 +2,7 @@ import { NavLink, Route, Routes } from 'react-router'
 
 import { useEventStream } from './hooks/useEventStream.ts'
 import { AttentionInboxPage } from './pages/AttentionInboxPage.tsx'
+import { IntakePage } from './pages/IntakePage.tsx'
 import { JobDetailPage } from './pages/JobDetailPage.tsx'
 import { JobsPage } from './pages/JobsPage.tsx'
 import { NotFoundPage } from './pages/NotFoundPage.tsx'
@@ -9,6 +10,7 @@ import { SystemStatusPage } from './pages/SystemStatusPage.tsx'
 
 const navigation = [
   { label: 'Inbox', to: '/' },
+  { label: 'Intake', to: '/intake' },
   { label: 'Jobs', to: '/jobs' },
   { label: 'System', to: '/system' },
 ]
@@ -70,6 +72,7 @@ function App() {
     <AppShell>
       <Routes>
         <Route path="/" element={<AttentionInboxPage />} />
+        <Route path="/intake" element={<IntakePage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/jobs/:jobId" element={<JobDetailPage />} />
         <Route path="/system" element={<SystemStatusPage />} />

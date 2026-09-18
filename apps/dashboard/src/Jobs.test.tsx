@@ -1,32 +1,13 @@
 import type { AttentionItem, Job } from '@handella/contracts'
 import { screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   installFakeEventSource,
   latestEventSource,
 } from './test/fakeEventSource.ts'
+import { aJob } from './test/fixtures.ts'
 import { renderAt } from './test/renderApp.tsx'
-
-const aJob = (overrides: Partial<Job> = {}): Job => ({
-  id: '123e4567-e89b-42d3-a456-426614174000',
-  source: 'adhoc',
-  title: 'Fix the flaky login test',
-  workClass: 'routine',
-  state: 'intake',
-  suspension: null,
-  linearIssueKey: null,
-  canonicalBranch: 'ell/eng-412-fix-flaky-login-test',
-  baseBranch: 'dev',
-  queuePriority: null,
-  worktreePath: null,
-  codexSessionId: null,
-  originalPrUrl: null,
-  createdAt: '2026-09-18T10:00:00.000Z',
-  updatedAt: '2026-09-18T10:00:00.000Z',
-  ...overrides,
-})
 
 const anAttentionItem = (
   overrides: Partial<AttentionItem> = {},
@@ -181,40 +162,6 @@ describe('the live event stream', () => {
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.length).toBeGreaterThan(before)
-    })
-  })
-})
-
-describe('creating a job', () => {
-  it('posts what the Handler typed', async () => {
-    const fetchMock = stubApi({ jobs: [] })
-    renderAt('/jobs')
-
-    await userEvent.click(
-      await screen.findByRole('button', { name: 'New job' }),
-    )
-    await userEvent.type(
-      screen.getByLabelText('Title'),
-      'Fix the flaky login test',
-    )
-    await userEvent.click(screen.getByRole('button', { name: 'Create job' }))
-
-    await waitFor(() => {
-      const posted = fetchMock.mock.calls.find(
-        ([url, init]) => String(url) === '/api/jobs' && init?.method === 'POST',
-      )
-      expect(posted).toBeDefined()
-      const body = JSON.parse(String(posted?.[1]?.body)) as Record<
-        string,
-        unknown
-      >
-      expect(body).toMatchObject({
-        source: 'adhoc',
-        title: 'Fix the flaky login test',
-        workClass: 'routine',
-        baseBranch: 'dev',
-        canonicalBranch: null,
-      })
     })
   })
 })

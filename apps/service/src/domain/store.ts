@@ -2,12 +2,18 @@ import { randomUUID } from 'node:crypto'
 
 import {
   canTransition,
+  canonicalBranchForRound,
+  defaultBaseBranch,
+  isSettledJobState,
   isTerminalJobState,
   type AttentionItem,
   type AttentionItemKind,
+  type BaseBranchSuggestions,
   type CreateJob,
   type DomainEvent,
+  type IntakeChoices,
   type Job,
+  type JobSource,
   type JobState,
   type JobSuspension,
   type JobTransitionRecord,
@@ -16,7 +22,17 @@ import {
   type RunbookSnapshot,
   type TransitionActor,
 } from '@handella/contracts'
-import { and, asc, desc, eq, inArray, isNull, type SQL } from 'drizzle-orm'
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  max,
+  ne,
+  type SQL,
+} from 'drizzle-orm'
 import type { SQLiteColumn, SQLiteTable } from 'drizzle-orm/sqlite-core'
 
 import type { HandellaDatabase } from '../database/database.js'
@@ -25,6 +41,7 @@ import {
   attentionItemNotFound,
   illegalTransition,
   jobNotFound,
+  linearIssueAlreadyLinked,
   stateConflict,
   suspensionNotAllowed,
   transitionGuardFailed,
@@ -59,6 +76,36 @@ export interface TransitionJobInput {
   to: JobState
 }
 
+/** What a job needs from Linear to be dispatchable, and nothing more. */
+export interface LinearIssueLink {
+  branchName: string
+  id: string
+  identifier: string
+  title: string
+  url: string
+}
+
+export interface CreateJobForLinearIssueInput extends IntakeChoices {
+  issue: LinearIssueLink
+  /**
+   * Where the request came from, not whether the job has a Linear issue: an ad
+   * hoc job has one too, because that is what makes it dispatchable. Phase 4
+   * must key dispatch on the canonical branch and the issue id, never on this.
+   */
+  source: JobSource
+}
+
+/** What the local service already knows about a Linear issue Intake is offering. */
+export interface IssueIntakeFacts {
+  /** The live Job holding this issue, or null while it is free. */
+  heldByJobId: string | null
+  /**
+   * Which round the next Job for this issue would be. Counts settled Jobs too,
+   * so a cancelled one never frees its branch name for reuse (ADR 0004).
+   */
+  nextRound: number
+}
+
 export interface SuspendJobInput {
   jobId: string
   reason?: string | undefined
@@ -67,7 +114,12 @@ export interface SuspendJobInput {
 
 export interface Store {
   createJob(input: CreateJob): Job
+  createJobForLinearIssue(input: CreateJobForLinearIssueInput): Job
+  describeIssuesForIntake(
+    issueIds: readonly string[],
+  ): Map<string, IssueIntakeFacts>
   getJob(jobId: string): Job
+  listBaseBranchSuggestions(options?: { limit?: number }): BaseBranchSuggestions
   listAttentionItems(options?: { includeResolved?: boolean }): AttentionItem[]
   listJobTransitions(jobId: string): JobTransitionRecord[]
   listJobs(): Job[]
@@ -141,6 +193,8 @@ const toJob = (row: JobRow): Job => ({
   state: row.state,
   suspension: row.suspension ?? null,
   linearIssueKey: row.linearIssueKey ?? null,
+  linearIssueId: row.linearIssueId ?? null,
+  linearIssueUrl: row.linearIssueUrl ?? null,
   canonicalBranch: row.canonicalBranch ?? null,
   baseBranch: row.baseBranch,
   queuePriority: row.queuePriority ?? null,
@@ -357,6 +411,18 @@ export function createStore(options: CreateStoreOptions): Store {
     }
   }
 
+  /** Both creation paths land here, so a job is only ever born one way. */
+  const insertJob = (
+    tx: Transaction,
+    row: JobRow,
+    events: DomainEvent[],
+  ): Job => {
+    tx.insert(jobs).values(row).run()
+    const job = toJob(row)
+    events.push(jobChanged(job))
+    return job
+  }
+
   /**
    * Runs the unit of work, then publishes. Nothing reaches a subscriber until
    * SQLite has committed, so a rolled-back transaction emits nothing.
@@ -386,6 +452,10 @@ export function createStore(options: CreateStoreOptions): Store {
           state: 'intake',
           suspension: null,
           linearIssueKey: input.linearIssueKey ?? null,
+          // Never linked: `CreateJob` cannot carry an issue id, so this path
+          // can neither collide with an intake job nor skip ADR 0004's suffix.
+          linearIssueId: null,
+          linearIssueUrl: null,
           canonicalBranch: input.canonicalBranch ?? null,
           baseBranch: input.baseBranch,
           queuePriority: null,
@@ -396,12 +466,136 @@ export function createStore(options: CreateStoreOptions): Store {
           updatedAt: now,
         }
 
-        tx.insert(jobs).values(row).run()
-
-        const job = toJob(row)
-        events.push(jobChanged(job))
-        return job
+        return insertJob(tx, row, events)
       })
+    },
+
+    createJobForLinearIssue(input) {
+      return commit((tx, events, now) => {
+        const { issue } = input
+
+        // Every job this issue has ever had, read once: the live holder and
+        // the round are two questions about the same rows, and answering them
+        // with two queries is what lets the branch intake shows drift from the
+        // branch intake writes. `describeIssuesForIntake` reads them the same
+        // way, so the two paths agree by construction.
+        //
+        // Keyed on the id rather than the identifier or the branch, because
+        // Linear rewrites both when an issue is retitled or moved team, and a
+        // job that cannot be found is a job that gets created twice.
+        const priorJobs = tx
+          .select({ id: jobs.id, state: jobs.state })
+          .from(jobs)
+          .where(eq(jobs.linearIssueId, issue.id))
+          .all()
+
+        // One live job per Linear issue.
+        const existing = priorJobs.find((row) => !isSettledJobState(row.state))
+        if (existing !== undefined) {
+          throw linearIssueAlreadyLinked(issue.identifier, existing.id)
+        }
+
+        // An issue can be worked more than once: round one merges, the issue
+        // is reopened, and the Handler takes it again. Each job owns its own
+        // branch, so the second and later ones carry a suffix. Settled jobs
+        // are counted too, so a name is never reused after a cancellation.
+        const round = priorJobs.length + 1
+
+        // Provisional until Dispatch. ADR 0004 has the name computed here so
+        // the Handler sees it before committing, and computed again when the
+        // branch is claimed, because another job for this issue may start in
+        // between; Dispatch is what fixes it.
+        const canonicalBranch = canonicalBranchForRound(issue.branchName, round)
+
+        const row: JobRow = {
+          id: newId(),
+          source: input.source,
+          title: issue.title,
+          workClass: input.workClass,
+          state: 'intake',
+          suspension: null,
+          linearIssueKey: issue.identifier,
+          linearIssueId: issue.id,
+          linearIssueUrl: issue.url,
+          canonicalBranch,
+          baseBranch: input.baseBranch,
+          queuePriority: null,
+          worktreePath: null,
+          codexSessionId: null,
+          originalPrUrl: null,
+          createdAt: now,
+          updatedAt: now,
+        }
+
+        return insertJob(tx, row, events)
+      })
+    },
+
+    /**
+     * Answers both questions intake asks about an issue it is about to offer,
+     * in one read: whether a live job already holds it, and which round the
+     * next job for it would be. Here rather than in the dashboard, so the ADR
+     * 0004 rule is applied where the jobs are and never re-derived from
+     * whatever list a browser happens to be holding.
+     */
+    describeIssuesForIntake(issueIds) {
+      const facts = new Map(
+        issueIds.map((issueId) => [
+          issueId,
+          { heldByJobId: null, nextRound: 1 } as IssueIntakeFacts,
+        ]),
+      )
+
+      if (issueIds.length === 0) {
+        return facts
+      }
+
+      const rows = database
+        .select({
+          id: jobs.id,
+          linearIssueId: jobs.linearIssueId,
+          state: jobs.state,
+        })
+        .from(jobs)
+        .where(inArray(jobs.linearIssueId, [...issueIds]))
+        .all()
+
+      for (const row of rows) {
+        const known =
+          row.linearIssueId === null ? undefined : facts.get(row.linearIssueId)
+        if (known === undefined) {
+          continue
+        }
+
+        known.nextRound += 1
+        if (!isSettledJobState(row.state)) {
+          known.heldByJobId = row.id
+        }
+      }
+
+      return facts
+    },
+
+    /**
+     * Phase 4 owns Git, so until then the help on offer is what this
+     * installation has actually used. The default is reported on its own field
+     * and excluded in SQL rather than after the limit, so asking for ten
+     * suggestions never answers with nine.
+     */
+    listBaseBranchSuggestions(options) {
+      const rows = database
+        .select({ baseBranch: jobs.baseBranch })
+        .from(jobs)
+        .where(ne(jobs.baseBranch, defaultBaseBranch))
+        .groupBy(jobs.baseBranch)
+        .orderBy(desc(max(jobs.createdAt)))
+        .limit(options?.limit ?? 10)
+        .all()
+
+      return {
+        defaultBranch: defaultBaseBranch,
+        recent: rows.map((row) => row.baseBranch),
+      }
     },
 
     getJob(jobId) {

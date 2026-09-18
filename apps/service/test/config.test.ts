@@ -20,6 +20,71 @@ afterEach(() => {
   }
 })
 
+describe('the optional Linear API key', () => {
+  it('is absent when the Handler has not set one', () => {
+    const config = loadConfig({
+      environment: {},
+      rootDirectory: temporaryRoot(),
+    })
+
+    expect(config.linearApiKey).toBeUndefined()
+  })
+
+  it('reads from a secure .env file', () => {
+    const root = temporaryRoot()
+    const environmentPath = join(root, '.env')
+    writeFileSync(
+      environmentPath,
+      'HANDELLA_LINEAR_API_KEY=lin_api_from_file\n',
+    )
+    chmodSync(environmentPath, 0o600)
+
+    const config = loadConfig({ environment: {}, rootDirectory: root })
+
+    expect(config.linearApiKey).toBe('lin_api_from_file')
+  })
+
+  it('is not treated as an unknown key', () => {
+    const root = temporaryRoot()
+    const environmentPath = join(root, '.env')
+    writeFileSync(
+      environmentPath,
+      'HANDELLA_LINEAR_API_KEY=lin_api_from_file\n',
+    )
+    chmodSync(environmentPath, 0o600)
+
+    expect(() =>
+      loadConfig({ environment: {}, rootDirectory: root }),
+    ).not.toThrow()
+  })
+
+  it('lets the process environment win, as every other key does', () => {
+    const root = temporaryRoot()
+    const environmentPath = join(root, '.env')
+    writeFileSync(
+      environmentPath,
+      'HANDELLA_LINEAR_API_KEY=lin_api_from_file\n',
+    )
+    chmodSync(environmentPath, 0o600)
+
+    const config = loadConfig({
+      environment: { HANDELLA_LINEAR_API_KEY: 'lin_api_from_process' },
+      rootDirectory: root,
+    })
+
+    expect(config.linearApiKey).toBe('lin_api_from_process')
+  })
+
+  it('reads a blank value as not set up yet, rather than as a key', () => {
+    const config = loadConfig({
+      environment: { HANDELLA_LINEAR_API_KEY: '   ' },
+      rootDirectory: temporaryRoot(),
+    })
+
+    expect(config.linearApiKey).toBeUndefined()
+  })
+})
+
 describe('loadConfig', () => {
   it('uses repository-local defaults and a fixed loopback host', () => {
     const root = temporaryRoot()

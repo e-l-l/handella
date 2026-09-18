@@ -5,18 +5,21 @@ import {
 } from '@fastify/type-provider-typebox'
 import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 
+import type { LinearAdapter } from './adapters/linear.js'
 import type { StatusSource } from './database/database.js'
 import { DomainError } from './domain/errors.js'
 import type { Store } from './domain/store.js'
 import type { Broadcaster } from './events/broadcaster.js'
 import { attentionRoutes } from './routes/attention.js'
 import { eventRoutes } from './routes/events.js'
+import { intakeRoutes } from './routes/intake.js'
 import { jobRoutes } from './routes/jobs.js'
 import { statusRoutes } from './routes/status.js'
 
 interface BuildAppOptions {
   broadcaster: Broadcaster
   dashboardPath?: string
+  linear: LinearAdapter
   logger?: FastifyServerOptions['logger']
   startedAt?: Date
   statusSource: StatusSource
@@ -46,6 +49,11 @@ export async function buildApp(options: BuildAppOptions) {
 
   app.setErrorHandler((error: FastifyError, request, reply) => {
     if (error instanceof DomainError) {
+      // Upstream detail never reaches the wire, but it is the only thing that
+      // makes an integration failure diagnosable, so it goes to the local log.
+      if (error.cause !== undefined) {
+        request.log.warn({ err: error.cause }, 'Upstream call failed')
+      }
       return reply
         .code(error.statusCode)
         .send({ code: error.code, message: error.message })
@@ -64,12 +72,17 @@ export async function buildApp(options: BuildAppOptions) {
   })
 
   await app.register(statusRoutes, {
+    linear: options.linear,
     startedAt,
     statusSource: options.statusSource,
     version: options.version,
   })
   await app.register(jobRoutes, { store: options.store })
   await app.register(attentionRoutes, { store: options.store })
+  await app.register(intakeRoutes, {
+    linear: options.linear,
+    store: options.store,
+  })
   await app.register(eventRoutes, { broadcaster: options.broadcaster })
 
   if (options.dashboardPath !== undefined) {

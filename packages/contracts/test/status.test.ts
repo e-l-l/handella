@@ -13,6 +13,7 @@ const validStatus = {
     createdAt: '2026-09-18T09:00:00.000Z',
     lastStartedAt: '2026-09-18T10:00:00.000Z',
   },
+  integrations: { linear: { configured: false } },
   database: { status: 'ok', journalMode: 'wal' },
 }
 
@@ -28,6 +29,13 @@ describe('status contracts', () => {
         uptimeSeconds: -1,
       }),
     ).toBe(false)
+  })
+
+  it('rejects a status that forgets to report an integration', () => {
+    const withoutIntegrations: Record<string, unknown> = { ...validStatus }
+    delete withoutIntegrations.integrations
+
+    expect(Value.Check(StatusResponseSchema, withoutIntegrations)).toBe(false)
   })
 
   it('accepts the public unavailable response', () => {

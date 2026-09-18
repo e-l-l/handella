@@ -25,6 +25,8 @@ const validJob = {
   state: 'intake',
   suspension: null,
   linearIssueKey: null,
+  linearIssueId: null,
+  linearIssueUrl: null,
   canonicalBranch: null,
   baseBranch: 'dev',
   queuePriority: null,
@@ -38,6 +40,19 @@ const validJob = {
 describe('job contract', () => {
   it('accepts a freshly created job with nothing dispatched yet', () => {
     expect(Value.Check(JobSchema, validJob)).toBe(true)
+  })
+
+  it('accepts a job linked to its Linear issue', () => {
+    expect(
+      Value.Check(JobSchema, {
+        ...validJob,
+        source: 'linear',
+        linearIssueKey: 'ENG-412',
+        linearIssueId: 'b2b9e5a6-0f1e-4c6b-9a3f-2b1c4d5e6f70',
+        linearIssueUrl: 'https://linear.app/acme/issue/ENG-412',
+        canonicalBranch: 'ell/eng-412-fix-flaky-login-test',
+      }),
+    ).toBe(true)
   })
 
   it('accepts a suspended job', () => {
@@ -75,6 +90,20 @@ describe('create job contract', () => {
         baseBranch: 'dev',
       }),
     ).toBe(true)
+  })
+
+  it('refuses to link a Linear issue, because only intake may', () => {
+    // `linearIssueId` is what the live-job index is keyed on and what ADR 0004
+    // counts rounds by. A recovery job that could set it would skip both.
+    expect(
+      Value.Check(CreateJobSchema, {
+        source: 'adhoc',
+        title: 'Fix the flaky login test',
+        workClass: 'routine',
+        baseBranch: 'dev',
+        linearIssueId: 'b2b9e5a6-0f1e-4c6b-9a3f-2b1c4d5e6f70',
+      }),
+    ).toBe(false)
   })
 
   it('rejects an unknown work class', () => {
