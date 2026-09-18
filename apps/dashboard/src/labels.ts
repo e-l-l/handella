@@ -1,8 +1,12 @@
 import type {
   AttentionItemKind,
+  Job,
+  JobSource,
   JobState,
   JobSuspension,
   LinearPriority,
+  PlanApprovalState,
+  StatusResponse,
   WorkClass,
 } from '@handella/contracts'
 
@@ -20,6 +24,16 @@ export const stateLabels: Record<JobState, string> = {
   cancelled: 'Cancelled',
 }
 
+/**
+ * How a job is named in a list: the Linear issue it came from, or the words
+ * for one that has none. An absent key is a fact about the job rather than
+ * missing data, so it is spelled once rather than at every surface that shows
+ * a job.
+ */
+export const issueKeyLabel = (
+  job: Pick<Job, 'linearIssueKey'> | undefined,
+): string => job?.linearIssueKey ?? 'ad hoc'
+
 /** A job is suspended or it is not; the state says nothing about that. */
 export const suspensionLabels: Record<JobSuspension, string> = {
   stoppedByHandler: 'Suspended — you stopped this job',
@@ -30,6 +44,20 @@ export const suspensionLabels: Record<JobSuspension, string> = {
 export const workClassLabels: Record<WorkClass, string> = {
   feature: 'Feature',
   routine: 'Routine',
+}
+
+/** Where the request came from, rather than what the wire calls that place. */
+export const sourceLabels: Record<JobSource, string> = {
+  linear: 'Assigned to you in Linear',
+  slack: 'Forwarded from Slack',
+  adhoc: 'Written by you',
+}
+
+/** Every revision is kept, so a revision the Handler has not read is a state. */
+export const planApprovalStateLabels: Record<PlanApprovalState, string> = {
+  pending: 'Waiting on you',
+  approved: 'Approved',
+  changesRequested: 'Changes requested',
 }
 
 /** Linear's scale, which runs the opposite way to most: 0 is no priority. */
@@ -50,6 +78,13 @@ export const attentionKindLabels: Record<AttentionItemKind, string> = {
   failure: 'Failure',
 }
 
+export const databaseStatusLabels: Record<
+  StatusResponse['database']['status'],
+  string
+> = {
+  ok: 'Healthy',
+}
+
 /**
  * One formatter for every timestamp the dashboard shows, built once: a fresh
  * `Intl.DateTimeFormat` costs far more than formatting with an existing one,
@@ -62,3 +97,20 @@ const timestampFormat = new Intl.DateTimeFormat(undefined, {
 
 export const formatTimestamp = (value: string): string =>
   timestampFormat.format(new Date(value))
+
+/**
+ * How long something has been waiting, in the handoff's compact spelling: 18m,
+ * 2h, 3d. Ages are read at a glance beside a title, where a full timestamp
+ * would be read as data rather than as pressure.
+ *
+ * Hours stop at a day rather than running to 48, so nothing that happened
+ * yesterday is still counted in hours the Handler has to divide themselves.
+ */
+export const formatAge = (value: string, now: number = Date.now()): string => {
+  const minutes = Math.floor((now - new Date(value).getTime()) / 60_000)
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}

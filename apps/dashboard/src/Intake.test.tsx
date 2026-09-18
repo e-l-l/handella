@@ -53,6 +53,8 @@ interface Routes {
   offers?: IntakeIssue[]
   /** What the cursor from the first page answers with. */
   nextPage?: IntakeIssue[]
+  /** What a search answers with, when a test needs the list to change. */
+  searchResults?: IntakeIssue[]
   states?: LinearWorkflowStateSummary[]
   teams?: LinearTeamSummary[]
 }
@@ -81,6 +83,9 @@ const stubApi = (routes: Routes = {}) => {
     if (url.startsWith('/api/intake/linear/issues')) {
       if (url.includes('cursor=')) {
         return json({ issues: routes.nextPage ?? [], nextCursor: null })
+      }
+      if (url.includes('search=') && routes.searchResults !== undefined) {
+        return json({ issues: routes.searchResults, nextCursor: null })
       }
       const offers =
         routes.offers ??
@@ -163,9 +168,8 @@ describe('the issue list', () => {
     stubApi()
     renderAt('/intake')
 
-    expect(
-      await screen.findByText('ENG-412 · Fix the flaky login test'),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('ENG-412')).toBeInTheDocument()
+    expect(screen.getByText('Fix the flaky login test')).toBeInTheDocument()
     expect(
       screen.getByText(/ell\/eng-412-fix-flaky-login-test/),
     ).toBeInTheDocument()
@@ -342,12 +346,10 @@ describe('the issue list', () => {
     )
 
     expect(
-      await screen.findByText('ENG-500 · Retire the legacy exporter'),
+      await screen.findByText('Retire the legacy exporter'),
     ).toBeInTheDocument()
     // The first page is kept rather than replaced.
-    expect(
-      screen.getByText('ENG-412 · Fix the flaky login test'),
-    ).toBeInTheDocument()
+    expect(screen.getByText('Fix the flaky login test')).toBeInTheDocument()
     expect(
       fetchMock.mock.calls.some(([url]) =>
         String(url).includes('cursor=page-2'),
@@ -359,7 +361,7 @@ describe('the issue list', () => {
     stubApi()
     renderAt('/intake')
 
-    await screen.findByText('ENG-412 · Fix the flaky login test')
+    await screen.findByText('Fix the flaky login test')
     expect(
       screen.queryByRole('button', { name: 'Show more issues' }),
     ).not.toBeInTheDocument()
@@ -384,9 +386,10 @@ describe('creating jobs from a selection', () => {
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     await userEvent.click(screen.getByLabelText('Select ENG-500'))
 
-    await userEvent.selectOptions(
-      screen.getByLabelText('Work class for ENG-500'),
-      'feature',
+    await userEvent.click(
+      within(
+        screen.getByRole('group', { name: 'Work class for ENG-500' }),
+      ).getByRole('radio', { name: 'Feature' }),
     )
     await userEvent.clear(screen.getByLabelText('Base branch for ENG-500'))
     await userEvent.type(
@@ -416,6 +419,35 @@ describe('creating jobs from a selection', () => {
       expect(posted).toBeDefined()
       expect(posted).not.toHaveProperty('canonicalBranch')
     })
+  })
+
+  it('refuses the batch while Linear has not named a branch for a selection', async () => {
+    // Selections survive a change of filters, so an issue can still be
+    // selected once the list it came from no longer holds it. Linear owns the
+    // canonical branch name and a job cannot be dispatched without one, so the
+    // panel says why rather than posting a job it could not carry.
+    stubApi({
+      searchResults: [
+        anOffer({
+          issue: anIssue({
+            id: 'issue-500',
+            identifier: 'ENG-500',
+            title: 'Retire the legacy exporter',
+            branchName: 'ell/eng-500-retire-the-legacy-exporter',
+          }),
+        }),
+      ],
+    })
+    renderAt('/intake')
+
+    await userEvent.click(await screen.findByLabelText('Select ENG-412'))
+    await userEvent.type(screen.getByLabelText('Search'), 'exporter')
+    await screen.findByText('Retire the legacy exporter')
+
+    expect(
+      await screen.findByText(/Linear has not named a branch for this issue/),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Create job' })).toBeDisabled()
   })
 
   it('keeps the good ones when one issue is already taken', async () => {
@@ -455,9 +487,11 @@ describe('ad hoc intake', () => {
       within(form).getByLabelText('Title'),
       'Retire the legacy exporter',
     )
-    await userEvent.selectOptions(
-      within(form).getByLabelText('Work class'),
-      'feature',
+    await userEvent.click(
+      within(within(form).getByRole('group', { name: 'Work class' })).getByRole(
+        'radio',
+        { name: 'Feature' },
+      ),
     )
     await userEvent.click(
       within(form).getByRole('button', { name: 'Create issue and job' }),

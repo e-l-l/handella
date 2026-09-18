@@ -25,9 +25,24 @@ import { jobKeys } from '../api/jobs.ts'
 import { fetchSystemStatus, statusKeys } from '../api/status.ts'
 import { AdhocIssueForm } from '../components/AdhocIssueForm.tsx'
 import { BaseBranchField } from '../components/BaseBranchField.tsx'
+import { Dot } from '../components/Chip.tsx'
 import { LinearIssueRow } from '../components/LinearIssueRow.tsx'
+import { Skeleton, SkeletonList } from '../components/Skeleton.tsx'
 import { WorkClassField } from '../components/WorkClassField.tsx'
-import { fieldClass, primaryButtonClass } from '../styles.ts'
+import { linearPriorityLabels } from '../labels.ts'
+import {
+  amberBannerClass,
+  cardClass,
+  cardTitleClass,
+  emptyPanelClass,
+  pillFieldClass,
+  primaryButtonClass,
+  screenClass,
+  secondaryButtonClass,
+  sectionTitleClass,
+  softCardClass,
+  wideRailGridClass,
+} from '../styles.ts'
 
 type Outcome = { kind: 'created' } | { kind: 'failed'; message: string }
 
@@ -47,23 +62,134 @@ function useDebounced(value: string, delay = 300): string {
   return settled
 }
 
+function SearchIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-[15px] flex-none text-ink-5"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 function SetupNotice() {
   return (
-    <section className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-5">
-      <h2 className="text-sm font-semibold">Linear is not configured</h2>
-      <p className="text-sm text-muted">
+    <section className={`flex flex-col gap-3 ${cardClass}`}>
+      <h2 className={cardTitleClass}>Linear is not configured</h2>
+      <p className="text-[13px] leading-[1.6] text-ink-3">
         Intake needs a Linear personal API key. Add{' '}
-        <code>HANDELLA_LINEAR_API_KEY</code> to <code>.env</code> in the
+        <code className="font-mono text-mint-soft">
+          HANDELLA_LINEAR_API_KEY
+        </code>{' '}
+        to <code className="font-mono text-mint-soft">.env</code> in the
         repository root, then restart Handella.
       </p>
-      <p className="text-sm text-muted">
+      <p className="text-[13px] leading-[1.6] text-ink-3">
         Everything else keeps working without it, including{' '}
-        <Link className="underline" to="/jobs">
+        <Link className="text-mint-soft underline" to="/jobs">
           the jobs you already have
         </Link>
         .
       </p>
     </section>
+  )
+}
+
+/**
+ * Why a selected issue cannot become a job, or null when it can. Linear owns
+ * the canonical branch name and a Job cannot be dispatched without one (ADR
+ * 0004), so an issue Handella can no longer name a branch for is refused here
+ * rather than at the request.
+ */
+const blockedReason = (offer: IntakeIssue | undefined): string | null => {
+  if (offer === undefined)
+    return 'Linear has not named a branch for this issue in the current list, so Handella cannot claim one. Clear the filters and select it again.'
+  if (offer.heldByJobId !== null)
+    return 'A live job already holds this issue, and its canonical branch with it.'
+  return null
+}
+
+/**
+ * One selected issue's intake decisions. The handoff draws a single selected
+ * issue; Handella allows several, and each is classified, branched and created
+ * independently, so the panel repeats this card rather than merging them.
+ */
+function IntakeCard({
+  choices,
+  offer,
+  onChange,
+}: {
+  choices: IntakeChoices
+  offer: IntakeIssue | undefined
+  onChange: (patch: Partial<IntakeChoices>) => void
+}) {
+  const label = offer?.issue.identifier ?? 'this issue'
+  const blocked = blockedReason(offer)
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className={`flex flex-col gap-2 ${softCardClass}`}>
+        <p className="font-mono text-[11.5px] text-ink-5">{label}</p>
+        <p className="text-[15px] font-[550] leading-[1.4]">
+          {offer?.issue.title ?? 'Selected issue'}
+        </p>
+        {offer === undefined ? null : (
+          <p className="text-[12.5px] text-ink-4">
+            {offer.issue.stateName} ·{' '}
+            {linearPriorityLabels[offer.issue.priority]}
+          </p>
+        )}
+      </div>
+
+      <WorkClassField
+        label={`Work class for ${label}`}
+        onChange={(workClass) => onChange({ workClass })}
+        value={choices.workClass}
+      />
+
+      <BaseBranchField
+        label={`Base branch for ${label}`}
+        onChange={(baseBranch) => onChange({ baseBranch })}
+        value={choices.baseBranch}
+      />
+
+      <div className="flex flex-col gap-2">
+        <p className="text-[13px] font-medium text-ink-2">
+          Canonical branch from Linear
+        </p>
+        {/* Read-only on purpose: Linear owns this name, and a job that cannot
+            be given one can never be dispatched. */}
+        <p
+          className={`rounded-2xl border border-dashed bg-surface px-4 py-3 font-mono text-[12.5px] ${
+            blocked === null
+              ? 'border-line-dashed text-mint-soft'
+              : 'border-amber/20 text-amber-ink'
+          }`}
+        >
+          {offer?.plannedBranch ?? 'No branch name'}
+        </p>
+        {blocked !== null ? (
+          // The handoff's blocked state: the reason sits in this field's
+          // helper line, beside the name it is about.
+          <p className={amberBannerClass} role="alert">
+            {blocked}
+          </p>
+        ) : (
+          <p className="flex items-center gap-2 text-[12px] text-ink-4">
+            <Dot className="size-1.5" tone="mint" />
+            {offer !== undefined && offer.round > 1
+              ? 'Worked before, so this job takes its own numbered branch.'
+              : 'Unclaimed. The worktree is cut from it at dispatch.'}
+          </p>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -132,9 +258,8 @@ export function IntakePage() {
 
   // One pass over the accumulated pages rather than a scan per selected row
   // per render: the base-branch inputs re-render this page on every keystroke.
-  const identifiers = useMemo(
-    () =>
-      new Map(offers.map((offer) => [offer.issue.id, offer.issue.identifier])),
+  const byIssueId = useMemo(
+    () => new Map(offers.map((offer) => [offer.issue.id, offer])),
     [offers],
   )
 
@@ -215,174 +340,210 @@ export function IntakePage() {
   })
 
   const selected = Object.entries(selections)
-  const labelFor = (issueId: string): string =>
-    identifiers.get(issueId) ?? issueId
+  // One blocked selection blocks the batch: every job in it is created from
+  // the same submission, and a job without a canonical branch is one Handella
+  // could never dispatch.
+  const blocked = selected.some(
+    ([issueId]) => blockedReason(byIssueId.get(issueId)) !== null,
+  )
+
+  if (status.isPending) {
+    return (
+      <section
+        aria-label="Loading intake"
+        className={screenClass}
+        role="status"
+      >
+        <Skeleton className="h-40 rounded-[22px]" />
+      </section>
+    )
+  }
+
+  if (!configured) {
+    return (
+      <section className={`flex flex-col gap-6 ${screenClass}`}>
+        <h1 className={sectionTitleClass}>Intake</h1>
+        <SetupNotice />
+      </section>
+    )
+  }
 
   return (
-    <section className="mx-auto flex max-w-4xl flex-col gap-6 px-5 py-10 sm:px-8">
-      <h1 className="text-2xl font-semibold tracking-tight">Intake</h1>
+    <div className={wideRailGridClass}>
+      <section className="flex flex-col px-7 pb-8 pt-[26px]">
+        <div className="mb-4 flex flex-wrap items-center gap-3.5">
+          <h1 className={sectionTitleClass}>Assigned &amp; actionable</h1>
+          <p className="font-mono text-[11.5px] text-ink-5">
+            {offers.length} issue{offers.length === 1 ? '' : 's'} ·{' '}
+            {selected.length} selected
+          </p>
+        </div>
 
-      {status.isPending ? (
-        <p aria-label="Loading intake" className="text-sm text-muted">
-          Loading…
-        </p>
-      ) : !configured ? (
-        <SetupNotice />
-      ) : (
-        <>
-          <div className="flex flex-wrap gap-3">
-            <label className="flex flex-1 flex-col gap-1 text-sm">
-              Search
-              <input
-                className={fieldClass}
-                onChange={(event) => setSearchInput(event.target.value)}
-                placeholder="Title or description"
-                value={searchInput}
-              />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              Linear team
-              <select
-                className={fieldClass}
-                onChange={(event) => {
-                  // The chosen state belongs to the team it was chosen from, so
-                  // it cannot outlive a change of team.
-                  setTeamId(event.target.value)
-                  setStateId('')
-                }}
-                value={teamId}
-              >
-                <option value="">All teams</option>
-                {(teams.data ?? []).map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.key} · {team.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              Linear state
-              <select
-                className={fieldClass}
-                disabled={teamId === ''}
-                onChange={(event) => setStateId(event.target.value)}
-                value={stateId}
-              >
-                <option value="">
-                  {teamId === '' ? 'Pick a team first' : 'Any actionable state'}
-                </option>
-                {(states.data ?? []).map((state) => (
-                  <option key={state.id} value={state.id}>
-                    {state.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
+        <div className="mb-[18px] flex flex-wrap items-center gap-2.5">
+          <label className="flex min-w-[240px] flex-1 items-center gap-2.5 rounded-full border border-line-strong bg-raised px-4 py-3">
+            <span className="sr-only">Search</span>
+            <SearchIcon />
+            <input
+              className="w-full bg-transparent text-[13.5px] text-ink outline-none placeholder:text-ink-4"
+              onChange={(event) => setSearchInput(event.target.value)}
+              placeholder="Search title, label, project…"
+              value={searchInput}
+            />
+          </label>
 
-          {issues.isPending ? (
-            <p aria-label="Loading issues" className="text-sm text-muted">
-              Loading…
-            </p>
-          ) : issues.error !== null ? (
-            <p className="text-sm text-danger" role="alert">
-              {issues.error.message}
-            </p>
-          ) : offers.length === 0 ? (
-            <p className="text-sm text-muted">
-              No actionable issues are assigned to you.
-            </p>
-          ) : (
-            <>
-              <ul className="flex flex-col gap-3">
-                {offers.map((offer) => {
-                  const outcome = create.data?.[offer.issue.id]
-                  return (
-                    <li className="flex flex-col gap-1" key={offer.issue.id}>
-                      <LinearIssueRow
-                        offer={offer}
-                        onToggle={() => toggle(offer.issue.id)}
-                        selected={offer.issue.id in selections}
-                      />
-                      {outcome === undefined ? null : outcome.kind ===
-                        'created' ? (
-                        <p className="text-xs text-positive">Job created.</p>
-                      ) : (
-                        <p className="text-xs text-danger" role="alert">
-                          {outcome.message}
-                        </p>
-                      )}
-                    </li>
-                  )
-                })}
-              </ul>
-
-              {issues.hasNextPage ? (
-                <button
-                  className="self-start rounded-full border border-line px-4 py-2 text-sm font-medium disabled:opacity-50"
-                  disabled={issues.isFetchingNextPage}
-                  onClick={() => void issues.fetchNextPage()}
-                  type="button"
-                >
-                  {issues.isFetchingNextPage ? 'Loading…' : 'Show more issues'}
-                </button>
-              ) : null}
-            </>
-          )}
-
-          {selected.length === 0 ? null : (
-            <form
-              aria-label="Create jobs"
-              className="flex flex-col gap-4 rounded-2xl border border-line bg-surface p-5"
-              onSubmit={(event) => {
-                event.preventDefault()
-                create.mutate()
+          <label>
+            <span className="sr-only">Linear team</span>
+            <select
+              className={pillFieldClass}
+              onChange={(event) => {
+                // The chosen state belongs to the team it was chosen from, so
+                // it cannot outlive a change of team.
+                setTeamId(event.target.value)
+                setStateId('')
               }}
+              value={teamId}
             >
-              <h2 className="text-sm font-semibold">
-                Classify each issue independently
-              </h2>
+              <option value="">All teams</option>
+              {(teams.data ?? []).map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.key} · {team.name}
+                </option>
+              ))}
+            </select>
+          </label>
 
-              {selected.map(([issueId, selection]) => {
-                const label = labelFor(issueId)
+          <label>
+            <span className="sr-only">Linear state</span>
+            <select
+              className={pillFieldClass}
+              disabled={teamId === ''}
+              onChange={(event) => setStateId(event.target.value)}
+              value={stateId}
+            >
+              <option value="">
+                {teamId === '' ? 'Pick a team first' : 'Any actionable state'}
+              </option>
+              {(states.data ?? []).map((state) => (
+                <option key={state.id} value={state.id}>
+                  {state.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {issues.isPending ? (
+          <SkeletonList
+            className="h-[70px] rounded-[18px]"
+            count={4}
+            label="Loading issues"
+            wrapperClassName="flex flex-col gap-[9px]"
+          />
+        ) : issues.error !== null ? (
+          <p className="text-[13px] text-red-ink" role="alert">
+            {issues.error.message}
+          </p>
+        ) : offers.length === 0 ? (
+          <p className={emptyPanelClass}>
+            No actionable issues are assigned to you.
+          </p>
+        ) : (
+          <>
+            <ul
+              aria-label="Assigned and actionable issues"
+              className="flex flex-col gap-[9px]"
+            >
+              {offers.map((offer) => {
+                const outcome = create.data?.[offer.issue.id]
                 return (
-                  <div
-                    className="flex flex-wrap items-end gap-3 border-t border-line pt-3 first:border-0 first:pt-0"
-                    key={issueId}
-                  >
-                    <p className="w-full text-sm font-medium">{label}</p>
-                    <WorkClassField
-                      label={`Work class for ${label}`}
-                      onChange={(workClass) => amend(issueId, { workClass })}
-                      value={selection.workClass}
+                  <li className="flex flex-col gap-1.5" key={offer.issue.id}>
+                    <LinearIssueRow
+                      offer={offer}
+                      onToggle={() => toggle(offer.issue.id)}
+                      selected={offer.issue.id in selections}
                     />
-                    <BaseBranchField
-                      label={`Base branch for ${label}`}
-                      onChange={(baseBranch) => amend(issueId, { baseBranch })}
-                      value={selection.baseBranch}
-                    />
-                  </div>
+                    {outcome === undefined ? null : outcome.kind ===
+                      'created' ? (
+                      <p className="pl-[18px] text-[12px] text-mint-soft">
+                        Job created.
+                      </p>
+                    ) : (
+                      <p
+                        className="pl-[18px] text-[12px] text-red-ink"
+                        role="alert"
+                      >
+                        {outcome.message}
+                      </p>
+                    )}
+                  </li>
                 )
               })}
+            </ul>
 
+            {issues.hasNextPage ? (
               <button
-                className={`self-start ${primaryButtonClass} disabled:opacity-50`}
-                disabled={create.isPending}
+                className={`mt-4 self-start ${secondaryButtonClass}`}
+                disabled={issues.isFetchingNextPage}
+                onClick={() => void issues.fetchNextPage()}
+                type="button"
+              >
+                {issues.isFetchingNextPage ? 'Loading…' : 'Show more issues'}
+              </button>
+            ) : null}
+          </>
+        )}
+
+        <div className="mt-8 flex flex-col gap-3.5">
+          <h2 className="text-[16px] font-semibold">Ad hoc work</h2>
+          <AdhocIssueForm />
+        </div>
+      </section>
+
+      <aside className="flex flex-col gap-[18px] border-line bg-deep px-[26px] pb-8 pt-[26px] min-[1200px]:border-l">
+        {/* Intake, not Dispatch: this panel commits the Job record and nothing
+            else. Claiming the branch, cutting the worktree and taking a queue
+            position are Dispatch's, and arrive with Phase 4. */}
+        <h2 className="text-[16px] font-semibold">Intake</h2>
+
+        {selected.length === 0 ? (
+          <p className={emptyPanelClass}>
+            Pick an issue to classify it and give it a base branch.
+          </p>
+        ) : (
+          <form
+            aria-label="Create jobs"
+            className="flex flex-1 flex-col gap-6"
+            onSubmit={(event) => {
+              event.preventDefault()
+              create.mutate()
+            }}
+          >
+            {selected.map(([issueId, choices]) => (
+              <IntakeCard
+                choices={choices}
+                key={issueId}
+                offer={byIssueId.get(issueId)}
+                onChange={(patch) => amend(issueId, patch)}
+              />
+            ))}
+
+            <div className="mt-auto flex flex-col gap-2.5">
+              <button
+                className={`w-full ${primaryButtonClass} py-3.5 text-[14px]`}
+                disabled={create.isPending || blocked}
                 type="submit"
               >
                 {selected.length === 1
                   ? 'Create job'
                   : `Create ${selected.length} jobs`}
               </button>
-            </form>
-          )}
-
-          <div className="flex flex-col gap-3">
-            <h2 className="text-sm font-semibold">Ad hoc work</h2>
-            <AdhocIssueForm />
-          </div>
-        </>
-      )}
-    </section>
+              <p className="text-center text-[12px] text-ink-5">
+                Each issue is classified, branched and created on its own.
+              </p>
+            </div>
+          </form>
+        )}
+      </aside>
+    </div>
   )
 }

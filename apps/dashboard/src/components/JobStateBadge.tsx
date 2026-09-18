@@ -1,28 +1,47 @@
-import { terminalJobStates, type Job, type JobState } from '@handella/contracts'
+import type { Job, JobState, JobSuspension } from '@handella/contracts'
 
+import { isRunning } from '../jobViews.ts'
 import { stateLabels, suspensionLabels } from '../labels.ts'
+import { Chip, type Tone } from './Chip.tsx'
 
-const waitingStates: readonly JobState[] = ['intake', 'planReview', 'prOpen']
+/**
+ * The palette carries the state, so the mapping is stated once: mint is
+ * healthy or finished, amber waits on the Handler, red failed, and a flat
+ * secondary chip is a job that is merely holding its place.
+ */
+const stateTones: Record<JobState, Tone> = {
+  intake: 'outline',
+  queued: 'solid',
+  planning: 'mint',
+  planReview: 'amber',
+  approved: 'mint',
+  implementing: 'mint',
+  prOpen: 'mint',
+  reviewing: 'amber',
+  merged: 'mint',
+  archived: 'quiet',
+  cancelled: 'quiet',
+}
 
-const toneFor = (state: JobState): string => {
-  if (terminalJobStates.includes(state)) return 'bg-surface-raised text-muted'
-  if (state === 'merged') return 'bg-positive-soft text-positive'
-  if (waitingStates.includes(state)) return 'bg-brand-soft text-brand'
-  return 'bg-surface-raised text-ink'
+/** A restart is not a failure, and neither is the Handler stopping a job. */
+const suspensionTones: Record<JobSuspension, Tone> = {
+  stoppedByHandler: 'amber',
+  stoppedBySystem: 'red',
+  interrupted: 'amber',
 }
 
 export function JobStateBadge({ job }: { job: Job }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-2">
-      <span
-        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${toneFor(job.state)}`}
-      >
+      {/* The dot marks a job holding a Codex slot, which is the scheduler's
+          question rather than the badge's: `jobViews` answers it. */}
+      <Chip dot={isRunning(job)} tone={stateTones[job.state]}>
         {stateLabels[job.state]}
-      </span>
+      </Chip>
       {job.suspension === null ? null : (
-        <span className="inline-flex rounded-full bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">
+        <Chip dot tone={suspensionTones[job.suspension]}>
           {suspensionLabels[job.suspension]}
-        </span>
+        </Chip>
       )}
     </span>
   )

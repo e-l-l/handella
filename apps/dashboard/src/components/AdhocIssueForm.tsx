@@ -10,7 +10,12 @@ import { useState, type FormEvent } from 'react'
 import { createAdhocJob, fetchLinearTeams, intakeKeys } from '../api/intake.ts'
 import { jobKeys } from '../api/jobs.ts'
 import { linearPriorityLabels } from '../labels.ts'
-import { fieldClass, primaryButtonClass } from '../styles.ts'
+import {
+  cardClass,
+  fieldClass,
+  fieldLabelClass,
+  primaryButtonClass,
+} from '../styles.ts'
 import { BaseBranchField } from './BaseBranchField.tsx'
 import { WorkClassField } from './WorkClassField.tsx'
 
@@ -102,14 +107,14 @@ export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
   return (
     <form
       aria-label="Create an ad hoc issue"
-      className="flex flex-col gap-4 rounded-2xl border border-line bg-surface p-5"
+      className={`flex flex-col gap-4 ${cardClass}`}
       onSubmit={submit}
     >
-      <p className="text-xs text-muted">
+      <p className="text-[12.5px] text-ink-4">
         Creates the Linear issue first, then the job, so it can be dispatched.
       </p>
 
-      <label className="flex flex-col gap-1 text-sm">
+      <label className={fieldLabelClass}>
         Team
         <select
           className={fieldClass}
@@ -124,7 +129,7 @@ export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
         </select>
       </label>
 
-      <label className="flex flex-col gap-1 text-sm">
+      <label className={fieldLabelClass}>
         Title
         <input
           className={fieldClass}
@@ -134,7 +139,7 @@ export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
         />
       </label>
 
-      <label className="flex flex-col gap-1 text-sm">
+      <label className={fieldLabelClass}>
         Description
         <textarea
           className={fieldClass}
@@ -144,7 +149,7 @@ export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
         />
       </label>
 
-      <label className="flex flex-col gap-1 text-sm">
+      <label className={fieldLabelClass}>
         Priority
         <select
           className={fieldClass}
@@ -181,7 +186,7 @@ export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
       </button>
 
       {create.error === null ? null : (
-        <p className="text-sm text-danger" role="alert">
+        <p className="text-[13px] text-red-ink" role="alert">
           {create.error.message}
         </p>
       )}

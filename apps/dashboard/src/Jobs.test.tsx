@@ -1,5 +1,6 @@
 import type { AttentionItem, Job } from '@handella/contracts'
 import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -52,18 +53,47 @@ const stubApi = (routes: Routes) => {
 
 beforeEach(() => {
   installFakeEventSource()
+  localStorage.clear()
 })
 
 describe('the attention inbox', () => {
   it('shows what needs the Handler and what is in flight', async () => {
-    stubApi({ attention: [anAttentionItem()], jobs: [aJob()] })
+    stubApi({
+      attention: [anAttentionItem()],
+      jobs: [aJob({ state: 'queued' })],
+    })
 
     renderAt('/')
 
     expect(
       await screen.findByText('Job stopped and needs a decision'),
     ).toBeInTheDocument()
-    expect(await screen.findByText('Jobs in flight')).toBeInTheDocument()
+    // A dispatched job holds a queue position, so the rail carries it under
+    // Queue rather than the inbox burying it in the list.
+    expect(await screen.findByText('Queue')).toBeInTheDocument()
+    expect(screen.getByText('Fix the flaky login test')).toBeInTheDocument()
+  })
+
+  it('leaves a job that is only taken out of the queue', async () => {
+    // Only Dispatch puts a Job in the queue, so an `intake` job holds no
+    // position and is not counted among those waiting for a slot.
+    stubApi({ attention: [], jobs: [aJob({ state: 'intake' })] })
+
+    renderAt('/')
+
+    expect(await screen.findByText('Nothing is queued.')).toBeInTheDocument()
+    expect(screen.getByText('0 waiting for a slot')).toBeInTheDocument()
+  })
+
+  it('does not seat a suspended job in the queue it cannot be started from', async () => {
+    stubApi({
+      attention: [],
+      jobs: [aJob({ state: 'queued', suspension: 'stoppedByHandler' })],
+    })
+
+    renderAt('/')
+
+    expect(await screen.findByText('Nothing is queued.')).toBeInTheDocument()
   })
 
   it('says so plainly when nothing is waiting', async () => {
@@ -74,6 +104,91 @@ describe('the attention inbox', () => {
     expect(
       await screen.findByText('Nothing is waiting on you.'),
     ).toBeInTheDocument()
+  })
+
+  it('carries the count of what is waiting on the nav', async () => {
+    stubApi({
+      attention: [
+        anAttentionItem(),
+        anAttentionItem({ id: '323e4567-e89b-42d3-a456-426614174000' }),
+      ],
+      jobs: [],
+    })
+
+    renderAt('/jobs')
+
+    expect(await screen.findByLabelText('2 waiting on you')).toBeInTheDocument()
+  })
+
+  it('draws no nav badge when nothing is waiting', async () => {
+    stubApi({ attention: [], jobs: [] })
+
+    renderAt('/jobs')
+
+    await screen.findByRole('link', { name: 'New job' })
+    expect(screen.queryByLabelText('0 waiting on you')).toBeNull()
+  })
+})
+
+describe('the attention inbox filters', () => {
+  const approval = anAttentionItem({
+    id: '423e4567-e89b-42d3-a456-426614174000',
+    kind: 'planApproval',
+    title: 'A plan is waiting for you',
+  })
+
+  it('shows only the kinds behind the filter the Handler picked', async () => {
+    stubApi({ attention: [anAttentionItem(), approval], jobs: [] })
+    const user = userEvent.setup()
+
+    renderAt('/')
+    await screen.findByText('A plan is waiting for you')
+    await user.click(screen.getByRole('button', { name: 'Approvals' }))
+
+    expect(screen.getByText('A plan is waiting for you')).toBeInTheDocument()
+    expect(screen.queryByText('Job stopped and needs a decision')).toBeNull()
+  })
+
+  it('keeps the count of everything waiting while a filter hides some of it', async () => {
+    stubApi({ attention: [anAttentionItem(), approval], jobs: [] })
+    const user = userEvent.setup()
+
+    renderAt('/')
+    await screen.findByText('A plan is waiting for you')
+    await user.click(screen.getByRole('button', { name: 'Approvals' }))
+
+    // The badge counts what needs the Handler, not what this filter shows.
+    const header = screen.getByRole('heading', { name: 'Needs you' })
+    expect(header.closest('div')).toHaveTextContent('2')
+  })
+
+  it('remembers the filter, so a reload does not lose the Handler their place', async () => {
+    stubApi({ attention: [anAttentionItem(), approval], jobs: [] })
+    const user = userEvent.setup()
+
+    const first = renderAt('/')
+    await screen.findByText('A plan is waiting for you')
+    await user.click(screen.getByRole('button', { name: 'Approvals' }))
+    first.unmount()
+
+    renderAt('/')
+
+    expect(
+      await screen.findByText('A plan is waiting for you'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Job stopped and needs a decision')).toBeNull()
+  })
+
+  it('falls back to everything when the stored filter is one this build lost', async () => {
+    localStorage.setItem('handella.inbox.filter', 'triage')
+    stubApi({ attention: [anAttentionItem(), approval], jobs: [] })
+
+    renderAt('/')
+
+    expect(
+      await screen.findByText('Job stopped and needs a decision'),
+    ).toBeInTheDocument()
+    expect(screen.getByText('A plan is waiting for you')).toBeInTheDocument()
   })
 })
 

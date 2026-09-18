@@ -1,55 +1,96 @@
 @import 'tailwindcss';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/jetbrains-mono';
 
+/**
+ * The design handoff's tokens, spelled once. Handella's dashboard is a dark
+ * surface by design rather than by preference, so there is no light scheme to
+ * switch to: the palette carries meaning (mint acts, amber waits, red failed)
+ * and a second set of hues would be a second set of meanings.
+ */
 :root {
-  color-scheme: light;
-  --canvas: #f3f3ee;
-  --surface: #fbfbf8;
-  --surface-raised: #ffffff;
-  --ink: #172019;
-  --muted: #697269;
-  --line: #daddd5;
-  --brand: #315f48;
-  --brand-soft: #e2eee6;
-  --positive: #237349;
-  --positive-soft: #ddf3e5;
-  --danger: #a3453c;
-  --danger-soft: #f8e3df;
-}
+  color-scheme: dark;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --canvas: #111612;
-    --surface: #171d18;
-    --surface-raised: #1c241e;
-    --ink: #edf3ee;
-    --muted: #9aa69c;
-    --line: #2c372f;
-    --brand: #83c7a3;
-    --brand-soft: #203b2d;
-    --positive: #82d5a6;
-    --positive-soft: #183526;
-    --danger: #f09a8f;
-    --danger-soft: #44231f;
-  }
+  /* Surfaces, from the page up to the rows that sit on cards. */
+  --surface: #131714;
+  --raised: #1a211d;
+  --raised-alt: #212a25;
+  --deep: #0f1311;
+  --secondary: #2a3b30;
+
+  /* The hover values the handoff derives, one per surface a row can sit on. */
+  --raised-hover: #1f2722;
+  --surface-hover: #171d19;
+
+  /* Mint is the only colour that acts; soft mint only ever speaks. */
+  --mint: #6ee7b7;
+  --mint-hover: #8bedc6;
+  --mint-active: #5ad3a3;
+  --mint-soft: #a7f3d0;
+
+  /* Six inks, brightest first. Ink 6 is decorative: it fails 4.5:1 on body. */
+  --ink: #e8f0ea;
+  --ink-2: #c8d6cd;
+  --ink-3: #9bada2;
+  --ink-4: #8fa096;
+  --ink-5: #7b8c82;
+  --ink-6: #6d7e74;
+
+  /* Ink 7 is the separator dot alone: never text, at any size. */
+  --ink-7: #3e4a43;
+
+  /* Waiting and failing. The bright value marks, the -ink value is readable. */
+  --amber: #f5c767;
+  --amber-ink: #e3c88c;
+  --red: #ef7e7e;
+  --red-ink: #f0a0a0;
+
+  /**
+   * Cards are separated by surface value and a hairline, never by shadow. The
+   * handoff draws four weights and means four different things by them, so a
+   * dashed placeholder and an unchecked box are not rounded to the nearest
+   * border already in use.
+   */
+  --line: rgb(167 243 208 / 0.08);
+  --line-strong: rgb(167 243 208 / 0.16);
+  --line-dashed: rgb(167 243 208 / 0.14);
+  --line-input: rgb(167 243 208 / 0.22);
+
+  /* Derived from mint rather than restating it: one hue, one source. */
+  --focus-ring: rgb(from var(--mint) r g b / 0.55);
 }
 
 @theme inline {
-  --color-canvas: var(--canvas);
   --color-surface: var(--surface);
-  --color-surface-raised: var(--surface-raised);
+  --color-raised: var(--raised);
+  --color-raised-alt: var(--raised-alt);
+  --color-deep: var(--deep);
+  --color-secondary: var(--secondary);
+  --color-raised-hover: var(--raised-hover);
+  --color-surface-hover: var(--surface-hover);
+  --color-mint: var(--mint);
+  --color-mint-hover: var(--mint-hover);
+  --color-mint-active: var(--mint-active);
+  --color-mint-soft: var(--mint-soft);
   --color-ink: var(--ink);
-  --color-muted: var(--muted);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-ink-4: var(--ink-4);
+  --color-ink-5: var(--ink-5);
+  --color-ink-6: var(--ink-6);
+  --color-ink-7: var(--ink-7);
+  --color-amber: var(--amber);
+  --color-amber-ink: var(--amber-ink);
+  --color-red: var(--red);
+  --color-red-ink: var(--red-ink);
   --color-line: var(--line);
-  --color-brand: var(--brand);
-  --color-brand-soft: var(--brand-soft);
-  --color-positive: var(--positive);
-  --color-positive-soft: var(--positive-soft);
-  --color-danger: var(--danger);
-  --color-danger-soft: var(--danger-soft);
-  --font-sans:
-    ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --color-line-strong: var(--line-strong);
+  --color-line-dashed: var(--line-dashed);
+  --color-line-input: var(--line-input);
+
+  --font-sans: 'Geist Variable', ui-sans-serif, -apple-system, sans-serif;
+  --font-mono:
+    'JetBrains Mono Variable', ui-monospace, SFMono-Regular, monospace;
 }
 
 * {
@@ -57,7 +98,7 @@
 }
 
 html {
-  background: var(--canvas);
+  background: var(--surface);
 }
 
 body {
@@ -65,13 +106,8 @@ body {
   min-width: 320px;
   min-height: 100svh;
   font-family: var(--font-sans);
-  background:
-    radial-gradient(
-      circle at 15% 5%,
-      color-mix(in srgb, var(--brand) 8%, transparent),
-      transparent 28rem
-    ),
-    var(--canvas);
+  background: var(--surface);
+  color: var(--ink);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -82,7 +118,60 @@ a {
   -webkit-tap-highlight-color: transparent;
 }
 
+/**
+ * The handoff draws one chevron for anything that opens a list, so every
+ * select wears it rather than each control drawing its own.
+ *
+ * The stroke repeats `--ink-5` as a literal because a `url()` cannot read a
+ * custom property; the two move together or the chevron drifts off-palette.
+ */
+select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237b8c82' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  background-size: 12px;
+  padding-right: 34px;
+}
+
+/* Every approving or destructive control is reachable, and visibly so. */
 :focus-visible {
-  outline: 3px solid color-mix(in srgb, var(--brand) 45%, transparent);
-  outline-offset: 3px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/**
+ * A loading card holds the shape its data will take and breathes while it
+ * waits. Tailwind's own `animate-pulse` runs 2s and fades to 0.5, so the
+ * handoff's 1.6s 0.6 → 1 is spelled here rather than approximated.
+ */
+.pulse-soft {
+  opacity: 0.6;
+}
+
+@keyframes pulse-soft {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* The handoff's one motion rule: colour moves, layout does not. */
+@media (prefers-reduced-motion: no-preference) {
+  a,
+  button,
+  input,
+  select,
+  textarea {
+    transition:
+      background-color 140ms ease-out,
+      border-color 140ms ease-out,
+      color 140ms ease-out;
+  }
+
+  .pulse-soft {
+    animation: pulse-soft 1.6s ease-in-out infinite alternate;
+  }
 }

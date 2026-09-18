@@ -1,6 +1,13 @@
 import type { IntakeIssue } from '@handella/contracts'
 
-import { linearPriorityLabels } from '../labels.ts'
+import { formatAge, linearPriorityLabels } from '../labels.ts'
+import {
+  listRowClass,
+  rowAgeClass,
+  rowIdentifierClass,
+  rowTitleClass,
+} from '../styles.ts'
+import { Chip } from './Chip.tsx'
 
 /**
  * `heldByJobId` is the job that already owns this issue, if one does. A Linear
@@ -23,34 +30,56 @@ export function LinearIssueRow({
   const unavailable = heldByJobId !== null
 
   return (
-    <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface p-4">
-      <input
-        aria-label={`Select ${issue.identifier}`}
-        checked={selected}
-        className="mt-1"
-        disabled={unavailable}
-        onChange={onToggle}
-        type="checkbox"
-      />
-      <div className="flex min-w-0 flex-col gap-1">
-        <p className="text-sm font-medium">
-          {issue.identifier} · {issue.title}
-        </p>
-        <p className="text-xs text-muted">
-          {issue.stateName} · {linearPriorityLabels[issue.priority]} ·{' '}
-          <code>{plannedBranch}</code>
-        </p>
+    <div
+      className={`${listRowClass} ${
+        selected
+          ? 'border border-mint/30 bg-mint/[0.07]'
+          : 'border border-line bg-raised'
+      } ${unavailable ? 'opacity-60' : ''}`}
+    >
+      <span className="relative inline-flex flex-none">
+        <input
+          aria-label={`Select ${issue.identifier}`}
+          checked={selected}
+          className="size-[19px] appearance-none rounded-[7px] border-[1.5px] border-line-input checked:border-mint checked:bg-mint disabled:cursor-not-allowed"
+          disabled={unavailable}
+          onChange={onToggle}
+          type="checkbox"
+        />
+        {selected ? (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 grid place-items-center font-mono text-[11px] font-bold text-deep"
+          >
+            ✓
+          </span>
+        ) : null}
+      </span>
+
+      <span className={rowIdentifierClass}>{issue.identifier}</span>
+
+      <span className="min-w-0 flex-1">
+        <span className={`block ${rowTitleClass}`}>{issue.title}</span>
+        <span className="mt-1 block font-mono text-[11px] text-ink-5">
+          {plannedBranch}
+        </span>
         {unavailable ? (
-          <p className="text-xs text-muted">
+          <span className="mt-1 block text-[12px] text-amber-ink">
             Already the Linear issue for an active job.
-          </p>
+          </span>
         ) : null}
         {round > 1 ? (
-          <p className="text-xs text-muted">
+          <span className="mt-1 block text-[12px] text-ink-4">
             Worked before, so this job gets its own branch.
-          </p>
+          </span>
         ) : null}
-      </div>
+      </span>
+
+      <span className="flex items-center gap-2.5">
+        <Chip tone="outline">{issue.stateName}</Chip>
+        <Chip tone="quiet">{linearPriorityLabels[issue.priority]}</Chip>
+        <span className={rowAgeClass}>{formatAge(issue.updatedAt)}</span>
+      </span>
     </div>
   )
 }

@@ -4,9 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { attentionKeys } from '../api/attention.ts'
 import { jobKeys, resumeJob, suspendJob, transitionJob } from '../api/jobs.ts'
 import { stateLabels } from '../labels.ts'
-
-const buttonClass =
-  'rounded-full bg-surface-raised px-3 py-1.5 text-sm font-medium text-ink ring-1 ring-line disabled:opacity-50'
+import { secondaryButtonClass } from '../styles.ts'
 
 /**
  * Every button here comes from the shared transition table, so the dashboard
@@ -42,15 +40,15 @@ export function JobActions({ job }: { job: Job }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-[9px]">
         {targets.length === 0 ? (
-          <p className="text-sm text-muted">
+          <p className="text-[13px] text-ink-3">
             This job has reached the end of its life.
           </p>
         ) : (
           targets.map((to) => (
             <button
-              className={buttonClass}
+              className={secondaryButtonClass}
               disabled={pending}
               key={to}
               onClick={() => move.mutate(to)}
@@ -63,7 +61,7 @@ export function JobActions({ job }: { job: Job }) {
 
         {job.suspension === null ? (
           <button
-            className={buttonClass}
+            className={secondaryButtonClass}
             disabled={pending}
             onClick={() => suspend.mutate()}
             type="button"
@@ -72,7 +70,7 @@ export function JobActions({ job }: { job: Job }) {
           </button>
         ) : (
           <button
-            className={buttonClass}
+            className={secondaryButtonClass}
             disabled={pending}
             onClick={() => resume.mutate()}
             type="button"
@@ -83,7 +81,7 @@ export function JobActions({ job }: { job: Job }) {
       </div>
 
       {failure === null || failure === undefined ? null : (
-        <p className="text-sm text-danger" role="alert">
+        <p className="text-[13px] text-red-ink" role="alert">
           {failure.message}
         </p>
       )}

@@ -1,7 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
 
 import { fetchSystemStatus, statusKeys } from '../api/status.ts'
-import { formatTimestamp } from '../labels.ts'
+import { Dot } from '../components/Chip.tsx'
+import { Fact } from '../components/Fact.tsx'
+import { SkeletonList } from '../components/Skeleton.tsx'
+import { databaseStatusLabels, formatTimestamp } from '../labels.ts'
+import {
+  cardClass,
+  primaryButtonClass,
+  screenClass,
+  sectionTitleClass,
+} from '../styles.ts'
 
 function formatUptime(value: number): string {
   const seconds = Math.max(0, Math.floor(value))
@@ -12,19 +21,15 @@ function formatUptime(value: number): string {
   return `${hours}h ${minutes % 60}m`
 }
 
+/** Card-shaped skeletons at the same radii, so nothing moves when data lands. */
 function LoadingState() {
   return (
-    <div
-      aria-label="Checking service status"
-      className="grid gap-4 md:grid-cols-3"
-    >
-      {[0, 1, 2].map((item) => (
-        <div
-          className="h-44 animate-pulse rounded-3xl border border-line bg-surface"
-          key={item}
-        />
-      ))}
-    </div>
+    <SkeletonList
+      className="h-44 rounded-[22px]"
+      count={3}
+      label="Checking service status"
+      wrapperClassName="grid gap-4 md:grid-cols-3"
+    />
   )
 }
 
@@ -36,28 +41,21 @@ export function SystemStatusPage() {
   })
 
   return (
-    <section className="mx-auto max-w-6xl px-5 py-12 sm:px-8 sm:py-16">
-      <div className="mb-9 flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
-        <div>
-          <p className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-brand">
-            Foundation
-          </p>
-          <h1 className="text-3xl font-semibold tracking-[-0.035em] sm:text-4xl">
-            System status
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted sm:text-base">
-            A quiet check on the local service, its database, and this Handella
-            installation.
-          </p>
-        </div>
+    <section className={`flex flex-col ${screenClass}`}>
+      <div className="mb-[18px] flex flex-wrap items-center gap-3.5">
+        <h1 className={sectionTitleClass}>System</h1>
+        <p className="max-w-[560px] text-[13px] leading-[1.6] text-ink-3">
+          A quiet check on the local service, its database, and this Handella
+          installation.
+        </p>
         {statusQuery.data ? (
-          <div
+          <span
             aria-live="polite"
-            className="inline-flex w-fit items-center gap-2 rounded-full bg-positive-soft px-3 py-2 text-sm font-semibold text-positive"
+            className="ml-auto inline-flex items-center gap-2 rounded-full bg-mint/16 px-3.5 py-[7px] text-[12.5px] text-mint-soft"
           >
-            <span className="size-2 rounded-full bg-positive" />
+            <Dot tone="mint" />
             {statusQuery.isFetching ? 'Refreshing' : 'All systems local'}
-          </div>
+          </span>
         ) : null}
       </div>
 
@@ -66,21 +64,21 @@ export function SystemStatusPage() {
       {statusQuery.isError ? (
         <div
           aria-live="assertive"
-          className="rounded-3xl border border-danger/20 bg-danger-soft p-7 sm:p-9"
+          className="flex flex-col gap-3 rounded-[22px] border border-red/30 bg-red/[0.09] p-6"
           role="alert"
         >
-          <p className="text-sm font-semibold text-danger">
+          <p className="font-mono text-[11px] uppercase tracking-[0.05em] text-red-ink">
             Service unavailable
           </p>
-          <h2 className="mt-2 text-xl font-semibold tracking-tight">
+          <h2 className="text-[16px] font-semibold">
             Handella could not complete its local health check.
           </h2>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-muted">
+          <p className="max-w-[640px] text-[13px] leading-[1.6] text-ink-3">
             {statusQuery.error.message} Check the terminal running the service,
             then try again.
           </p>
           <button
-            className="mt-6 rounded-full bg-danger px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+            className={`self-start ${primaryButtonClass}`}
             disabled={statusQuery.isFetching}
             onClick={() => void statusQuery.refetch()}
             type="button"
@@ -92,84 +90,83 @@ export function SystemStatusPage() {
 
       {statusQuery.data ? (
         <div className="grid gap-4 md:grid-cols-3">
-          <article className="rounded-3xl border border-line bg-surface-raised p-6 shadow-[0_18px_55px_rgba(20,35,25,0.06)]">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+          <article className={`${cardClass} flex flex-col gap-4`}>
+            <p className="font-mono text-[11px] uppercase tracking-[0.05em] text-ink-5">
               Local service
             </p>
-            <div className="mt-6 flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-2xl bg-positive-soft text-positive">
-                <span className="size-2.5 rounded-full bg-positive" />
+            <div className="flex items-center gap-3">
+              <span className="grid size-10 place-items-center rounded-2xl bg-mint/16">
+                <Dot tone="mint" />
               </span>
               <div>
-                <h2 className="font-semibold">Connected</h2>
-                <p className="text-sm text-muted">
+                <h2 className="text-[14.5px] font-semibold">Connected</h2>
+                <p className="text-[12.5px] text-ink-4">
                   Version {statusQuery.data.version}
                 </p>
               </div>
             </div>
-            <dl className="mt-7 border-t border-line pt-4 text-sm">
-              <div className="flex justify-between gap-4">
-                <dt className="text-muted">Uptime</dt>
-                <dd className="font-mono text-xs font-medium">
-                  {formatUptime(statusQuery.data.uptimeSeconds)}
-                </dd>
-              </div>
+            <dl className="flex flex-col gap-2.5 border-t border-line pt-4">
+              <Fact
+                label="Uptime"
+                value={formatUptime(statusQuery.data.uptimeSeconds)}
+              />
+              <Fact label="Bound to" value="127.0.0.1" />
             </dl>
           </article>
 
-          <article className="rounded-3xl border border-line bg-surface-raised p-6 shadow-[0_18px_55px_rgba(20,35,25,0.06)]">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+          <article className={`${cardClass} flex flex-col gap-4`}>
+            <p className="font-mono text-[11px] uppercase tracking-[0.05em] text-ink-5">
               Database
             </p>
-            <div className="mt-6 flex items-center gap-3">
-              <span className="grid size-10 place-items-center rounded-2xl bg-brand-soft font-mono text-xs font-bold text-brand">
+            <div className="flex items-center gap-3">
+              <span className="grid size-10 place-items-center rounded-2xl bg-secondary font-mono text-[11px] font-bold text-mint-soft">
                 DB
               </span>
               <div>
-                <h2 className="font-semibold">SQLite ready</h2>
-                <p className="text-sm text-muted">Write-ahead logging</p>
+                <h2 className="text-[14.5px] font-semibold">SQLite ready</h2>
+                <p className="text-[12.5px] text-ink-4">Write-ahead logging</p>
               </div>
             </div>
-            <dl className="mt-7 border-t border-line pt-4 text-sm">
-              <div className="flex justify-between gap-4">
-                <dt className="text-muted">Journal mode</dt>
-                <dd className="font-mono text-xs font-semibold uppercase">
-                  {statusQuery.data.database.journalMode}
-                </dd>
-              </div>
+            <dl className="flex flex-col gap-2.5 border-t border-line pt-4">
+              <Fact
+                label="Journal mode"
+                value={statusQuery.data.database.journalMode.toUpperCase()}
+              />
+              <Fact
+                label="Status"
+                value={databaseStatusLabels[statusQuery.data.database.status]}
+              />
             </dl>
           </article>
 
-          <article className="rounded-3xl border border-line bg-surface-raised p-6 shadow-[0_18px_55px_rgba(20,35,25,0.06)]">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted">
+          <article className={`${cardClass} flex flex-col gap-4`}>
+            <p className="font-mono text-[11px] uppercase tracking-[0.05em] text-ink-5">
               Installation
             </p>
-            <p className="mt-6 break-all font-mono text-sm font-semibold leading-6">
+            <p className="break-all font-mono text-[12.5px] leading-[1.5] text-mint-soft">
               {statusQuery.data.installation.id}
             </p>
-            <dl className="mt-5 space-y-3 border-t border-line pt-4 text-xs">
-              <div>
-                <dt className="text-muted">Created</dt>
-                <dd className="mt-1 font-medium">
-                  {formatTimestamp(statusQuery.data.installation.createdAt)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted">Last started</dt>
-                <dd className="mt-1 font-medium">
-                  {formatTimestamp(statusQuery.data.installation.lastStartedAt)}
-                </dd>
-              </div>
+            <dl className="flex flex-col gap-2.5 border-t border-line pt-4">
+              <Fact
+                label="Created"
+                value={formatTimestamp(statusQuery.data.installation.createdAt)}
+              />
+              <Fact
+                label="Last started"
+                value={formatTimestamp(
+                  statusQuery.data.installation.lastStartedAt,
+                )}
+              />
             </dl>
           </article>
         </div>
       ) : null}
 
-      <footer className="mt-8 flex flex-col justify-between gap-3 border-t border-line pt-5 text-xs text-muted sm:flex-row">
+      <footer className="mt-8 flex flex-col justify-between gap-3 border-t border-line pt-5 text-[12px] text-ink-5 sm:flex-row">
         <p>
           The Handler keeps the final say. Handella keeps the machinery tidy.
         </p>
-        <p>Refreshes every 30 seconds</p>
+        <p className="font-mono">Refreshes every 30 seconds</p>
       </footer>
     </section>
   )
