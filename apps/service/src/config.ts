@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { parse } from 'dotenv'
 
@@ -19,6 +19,12 @@ export interface AppConfig {
   linearApiKey: string | undefined
   port: number
   repositoryRoot: string
+  /**
+   * Where Dispatch cuts worktrees. Beside the database rather than inside the
+   * target checkout, and deliberately not configurable — see
+   * docs/adr/0006-fixed-worktree-root.md.
+   */
+  worktreeRoot: string
 }
 
 interface LoadConfigOptions {
@@ -110,5 +116,6 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     linearApiKey: parseLinearApiKey(valueFor('HANDELLA_LINEAR_API_KEY')),
     port: parsePort(valueFor('HANDELLA_PORT')),
     repositoryRoot: rootDirectory,
+    worktreeRoot: join(dirname(databasePath), 'worktrees'),
   }
 }

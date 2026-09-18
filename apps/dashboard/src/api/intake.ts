@@ -19,7 +19,10 @@ import { request } from './client.ts'
  */
 export const intakeKeys = {
   all: ['intake'] as const,
-  baseBranches: ['intake', 'base-branches'] as const,
+  baseBranches: (repositoryId?: string) =>
+    ['intake', 'base-branches', repositoryId ?? null] as const,
+  /** Every repository's list, for invalidating them together. */
+  baseBranchesAll: ['intake', 'base-branches'] as const,
   issues: (query: LinearIssueQuery) => ['intake', 'issues', query] as const,
   /** Every filtered issue list, for invalidating the lists without the teams. */
   issuesAll: ['intake', 'issues'] as const,
@@ -56,8 +59,19 @@ export const fetchLinearTeamWorkflowStates = async (
 ): Promise<LinearWorkflowStateSummary[]> =>
   request(`/api/intake/linear/teams/${encodeURIComponent(teamId)}/states`)
 
-export const fetchBaseBranches = async (): Promise<BaseBranchSuggestions> =>
-  request('/api/intake/base-branches')
+/**
+ * Answers from the remote once a repository is chosen, and from this
+ * installation's own history until then — so the field still helps on the way
+ * to choosing one.
+ */
+export const fetchBaseBranches = async (
+  repositoryId?: string,
+): Promise<BaseBranchSuggestions> =>
+  request(
+    repositoryId === undefined
+      ? '/api/intake/base-branches'
+      : `/api/intake/base-branches?repositoryId=${encodeURIComponent(repositoryId)}`,
+  )
 
 export const createJobFromLinearIssue = async (
   body: CreateJobFromLinearIssue,

@@ -2,7 +2,11 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { unconfiguredLinearAdapter } from './adapters/linear.js'
+import { stubCodexAdapter } from './adapters/codex.js'
+import { createGitAdapter } from './adapters/git-cli.js'
 import { buildApp } from './app.js'
+import { createDispatcher } from './domain/dispatch.js'
+import { createScheduler } from './domain/scheduler.js'
 import { loadConfig } from './config.js'
 import { defaultMigrationsPath, openDatabase } from './database/database.js'
 import { createStore } from './domain/store.js'
@@ -47,8 +51,18 @@ async function main(): Promise<void> {
           apiKey: config.linearApiKey,
         })
 
+  const git = createGitAdapter()
+  const dispatcher = createDispatcher({
+    git,
+    linear,
+    store,
+    worktreeRoot: config.worktreeRoot,
+  })
+
   const app = await buildApp({
     broadcaster,
+    dispatcher,
+    git,
     linear,
     store,
     ...(production ? { dashboardPath: config.dashboardPath } : {}),
@@ -64,7 +78,19 @@ async function main(): Promise<void> {
     version: readVersion(),
   })
 
+  // Started after the app is built, so the first pass sees a store that is
+  // fully wired, and stopped before the database closes under it.
+  const scheduler = createScheduler({
+    broadcaster,
+    codex: stubCodexAdapter,
+    logger: app.log,
+    store,
+  })
+  scheduler.start()
+
   app.addHook('onClose', async () => {
+    scheduler.stop()
+    await scheduler.whenIdle()
     database.close()
   })
 

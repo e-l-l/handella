@@ -49,3 +49,13 @@ export const suspendJob = async (
 
 export const resumeJob = async (jobId: string): Promise<Job> =>
   request(`/api/jobs/${jobId}/suspension`, { method: 'DELETE' })
+
+/**
+ * 202, not 200: the claim has committed and the job is queued, but the worktree
+ * is still being cut. The path arrives over the event stream.
+ */
+export const dispatchJob = async (jobId: string): Promise<Job> =>
+  request(`/api/jobs/${jobId}/dispatch`, { method: 'POST' })
+
+export const reorderQueue = async (jobIds: string[]): Promise<Job[]> =>
+  request('/api/queue/order', { body: { jobIds }, method: 'POST' })

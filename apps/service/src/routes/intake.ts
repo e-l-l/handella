@@ -17,6 +17,7 @@ import {
   type FastifyPluginCallbackTypebox,
 } from '@fastify/type-provider-typebox'
 
+import type { GitAdapter } from '../adapters/git.js'
 import type { LinearAdapter } from '../adapters/linear.js'
 import { linearIssueNotActionable } from '../domain/errors.js'
 import type { Store } from '../domain/store.js'
@@ -38,10 +39,11 @@ const linearErrorResponses = {
 const defaultIssueLimit = 25
 
 export const intakeRoutes: FastifyPluginCallbackTypebox<{
+  git: GitAdapter
   linear: LinearAdapter
   store: Store
 }> = (app, options, done) => {
-  const { linear, store } = options
+  const { git, linear, store } = options
 
   // Linear says what the issues are; the local store says what Handella
   // already knows about them. Both halves are answered here, so the dashboard
@@ -140,6 +142,7 @@ export const intakeRoutes: FastifyPluginCallbackTypebox<{
         store.createJobForLinearIssue({
           baseBranch: request.body.baseBranch,
           issue,
+          repositoryId: request.body.repositoryId,
           source: 'linear',
           workClass: request.body.workClass,
         }),
@@ -155,6 +158,7 @@ export const intakeRoutes: FastifyPluginCallbackTypebox<{
         response: {
           201: JobSchema,
           400: ApiErrorSchema,
+          404: ApiErrorSchema,
           409: ApiErrorSchema,
           ...linearErrorResponses,
         },
@@ -175,6 +179,7 @@ export const intakeRoutes: FastifyPluginCallbackTypebox<{
         store.createJobForLinearIssue({
           baseBranch: request.body.baseBranch,
           issue,
+          repositoryId: request.body.repositoryId,
           source: 'adhoc',
           workClass: request.body.workClass,
         }),
@@ -182,11 +187,45 @@ export const intakeRoutes: FastifyPluginCallbackTypebox<{
     },
   )
 
-  // Local, so it keeps answering when Linear does not.
+  /**
+   * Answers from git once the Handler has said which checkout they mean, and
+   * from this installation's own history until then — so the field still works
+   * on the way to choosing a repository, and stops guessing once it can ask.
+   *
+   * Local either way, so it keeps answering when Linear does not.
+   */
   app.get(
     '/api/intake/base-branches',
-    { schema: { response: { 200: BaseBranchSuggestionsSchema } } },
-    async () => store.listBaseBranchSuggestions(),
+    {
+      schema: {
+        querystring: Type.Object({
+          repositoryId: Type.Optional(Type.String()),
+        }),
+        response: {
+          200: BaseBranchSuggestionsSchema,
+          404: ApiErrorSchema,
+          502: ApiErrorSchema,
+        },
+      },
+    },
+    async (request) => {
+      const { repositoryId } = request.query
+      if (repositoryId === undefined) {
+        return store.listBaseBranchSuggestions()
+      }
+
+      const repository = store.getRepository(repositoryId)
+      const branches = await git.listRemoteBranches(repository.path)
+
+      // The default is reported on its own field, so it is left out of the list
+      // rather than appearing twice.
+      return {
+        defaultBranch: repository.defaultBaseBranch,
+        recent: branches.filter(
+          (branch) => branch !== repository.defaultBaseBranch,
+        ),
+      }
+    },
   )
 
   done()

@@ -1,6 +1,7 @@
 import { Link } from 'react-router'
 
 import { JobRow } from '../components/JobRow.tsx'
+import { QueuePanel } from '../components/QueuePanel.tsx'
 import { SkeletonList } from '../components/Skeleton.tsx'
 import { useJobs } from '../hooks/useJobs.ts'
 import { workClassLabels } from '../labels.ts'
@@ -28,6 +29,10 @@ export function JobsPage() {
           New job
         </Link>
       </div>
+
+      {/* Only the queued jobs, and only when there are some: the list below is
+          every job, and the queue is the part the Handler can reorder. */}
+      <QueuePanel jobs={all} />
 
       {jobs.isPending ? (
         <SkeletonList

@@ -1,7 +1,7 @@
-import type { AttentionItem, Job } from '@handella/contracts'
+import type { AttentionItem } from '@handella/contracts'
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   installFakeEventSource,
@@ -9,6 +9,7 @@ import {
 } from './test/fakeEventSource.ts'
 import { aJob } from './test/fixtures.ts'
 import { renderAt } from './test/renderApp.tsx'
+import { stubApi } from './test/stubApi.ts'
 
 const anAttentionItem = (
   overrides: Partial<AttentionItem> = {},
@@ -22,34 +23,6 @@ const anAttentionItem = (
   resolvedAt: null,
   ...overrides,
 })
-
-interface Routes {
-  attention?: AttentionItem[]
-  jobs?: Job[]
-}
-
-const stubApi = (routes: Routes) => {
-  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    void init
-    const url = String(input)
-    const json = (body: unknown) =>
-      Promise.resolve(
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
-      )
-
-    if (url === '/api/attention') return json(routes.attention ?? [])
-    if (url === '/api/jobs') return json(routes.jobs ?? [])
-    if (url.endsWith('/transitions')) return json([])
-    if (url.endsWith('/plan-versions')) return json([])
-    if (url.startsWith('/api/jobs/')) return json((routes.jobs ?? [])[0])
-    return Promise.resolve(new Response('{}', { status: 404 }))
-  })
-  vi.stubGlobal('fetch', fetchMock)
-  return fetchMock
-}
 
 beforeEach(() => {
   installFakeEventSource()
@@ -199,15 +172,66 @@ describe('the job detail page', () => {
     renderAt(`/jobs/${aJob().id}`)
 
     expect(
-      await screen.findByRole('button', { name: 'Move to Queued' }),
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: 'Move to Cancelled' }),
+      await screen.findByRole('button', { name: 'Move to Cancelled' }),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Move to Planning' }),
     ).toBeNull()
     expect(screen.queryByRole('button', { name: 'Move to Merged' })).toBeNull()
+  })
+
+  it('offers Dispatch in place of a move to queued', async () => {
+    stubApi({ jobs: [aJob({ state: 'intake' })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+
+    expect(
+      await screen.findByRole('button', { name: 'Dispatch' }),
+    ).toBeInTheDocument()
+    // The edge exists, but walking it by hand would claim no branch and cut no
+    // worktree, so the derived buttons leave it out.
+    expect(screen.queryByRole('button', { name: 'Move to Queued' })).toBeNull()
+  })
+
+  it('will not dispatch a job Linear has not named a branch for', async () => {
+    stubApi({
+      jobs: [aJob({ state: 'intake', canonicalBranch: null })],
+    })
+
+    renderAt(`/jobs/${aJob().id}`)
+
+    expect(
+      await screen.findByRole('button', { name: 'Dispatch' }),
+    ).toBeDisabled()
+  })
+
+  it('dispatches through its own endpoint, not through a transition', async () => {
+    const fetchMock = stubApi({ jobs: [aJob({ state: 'intake' })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Dispatch' }),
+    )
+
+    await waitFor(() => {
+      const posted = fetchMock.mock.calls.filter(
+        ([url, init]) =>
+          String(url).endsWith('/dispatch') &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      )
+      expect(posted).toHaveLength(1)
+    })
+  })
+
+  it('stops offering Dispatch once the job is queued', async () => {
+    stubApi({ jobs: [aJob({ state: 'queued' })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+
+    expect(
+      await screen.findByRole('button', { name: 'Move to Planning' }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Dispatch' })).toBeNull()
   })
 
   it('offers resume rather than suspend once a job is suspended', async () => {

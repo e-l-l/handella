@@ -115,6 +115,13 @@ export const JobSchema = Type.Object(
      * what it reads here.
      */
     canonicalBranch: Nullable(BranchNameSchema),
+    /**
+     * The checkout this Job's worktree is cut from. Nullable for the same
+     * reason the Linear columns are: `POST /api/jobs` is the recovery path and
+     * cannot name one, and such a Job can never be dispatched. Intake always
+     * sets it, because a base branch means nothing without the remote it is on.
+     */
+    repositoryId: Nullable(UuidSchema),
     baseBranch: BranchNameSchema,
     queuePriority: Nullable(Type.Integer()),
     worktreePath: Nullable(Type.String()),

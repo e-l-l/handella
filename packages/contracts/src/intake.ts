@@ -9,9 +9,14 @@ import {
 import { Nullable, UuidSchema } from './primitives.js'
 
 /**
- * The two decisions Intake takes from the browser, and the only two. They
+ * The three decisions Intake takes from the browser, and the only three. They
  * travel together through every creation path, so they are one type rather
- * than a pair each path has to keep in step.
+ * than a trio each path has to keep in step.
+ *
+ * The repository is required here although the column is nullable: a base
+ * branch means nothing without the remote it is on, so a Job born at Intake
+ * always names one. Only the recovery path leaves it null, and a Job with no
+ * repository can never be dispatched.
  *
  * Carries no `$id`: it is spread into the records below rather than sent on
  * its own, and one id resolving to two schemas is what stops Fastify
@@ -19,6 +24,7 @@ import { Nullable, UuidSchema } from './primitives.js'
  */
 export const IntakeChoicesSchema = Type.Object({
   workClass: WorkClassSchema,
+  repositoryId: UuidSchema,
   baseBranch: BranchNameSchema,
 })
 

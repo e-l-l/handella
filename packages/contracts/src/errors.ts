@@ -17,6 +17,12 @@ export const apiErrorCodes = [
   'linear_issue_not_actionable',
   'linear_issue_not_assigned',
   'linear_issue_already_linked',
+  'repository_not_found',
+  'repository_in_use',
+  'canonical_branch_claimed',
+  'canonical_branch_unowned',
+  'git_unavailable',
+  'worktree_creation_failed',
   'validation_failed',
   'internal_error',
 ] as const

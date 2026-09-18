@@ -15,7 +15,7 @@ interface RequestOptions {
   body?: unknown
   /** What to say when the service fails without a readable body. */
   fallbackMessage?: string
-  method?: 'DELETE' | 'GET' | 'POST'
+  method?: 'DELETE' | 'GET' | 'PATCH' | 'POST'
 }
 
 const defaultFallback = 'The local service rejected that request.'
@@ -49,6 +49,12 @@ export async function request<Result>(
       // Keep the safe fallback when the response is not JSON.
     }
     throw new ApiRequestError(message, code)
+  }
+
+  // A 204 carries no body, and parsing one as JSON throws. Deleting a
+  // repository is the only such response today.
+  if (response.status === 204) {
+    return undefined as Result
   }
 
   return (await response.json()) as Result

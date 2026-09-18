@@ -10,6 +10,7 @@ import {
   aRunbookSnapshot,
   cleanupTestContexts,
   createTestContext,
+  testRepositoryId,
 } from './helpers.js'
 
 afterEach(cleanupTestContexts)
@@ -366,6 +367,7 @@ describe('creating a job for a Linear issue', () => {
     const context = createTestContext()
 
     const job = context.store.createJobForLinearIssue({
+      repositoryId: testRepositoryId,
       baseBranch: 'dev',
       issue: aLinearIssueLink(),
       source: 'linear',
@@ -384,6 +386,7 @@ describe('creating a job for a Linear issue', () => {
     const { store } = createTestContext()
 
     const job = store.createJobForLinearIssue({
+      repositoryId: testRepositoryId,
       baseBranch: 'main',
       issue: aLinearIssueLink(),
       source: 'adhoc',
@@ -401,6 +404,7 @@ describe('creating a job for a Linear issue', () => {
   it('refuses a second live job for one issue', () => {
     const { store } = createTestContext()
     store.createJobForLinearIssue({
+      repositoryId: testRepositoryId,
       baseBranch: 'dev',
       issue: aLinearIssueLink(),
       source: 'linear',
@@ -409,6 +413,7 @@ describe('creating a job for a Linear issue', () => {
 
     expect(() =>
       store.createJobForLinearIssue({
+        repositoryId: testRepositoryId,
         baseBranch: 'dev',
         issue: aLinearIssueLink(),
         source: 'linear',
@@ -422,6 +427,7 @@ describe('creating a job for a Linear issue', () => {
   it('keys that refusal on the issue id, not the identifier Linear rewrites', () => {
     const { store } = createTestContext()
     store.createJobForLinearIssue({
+      repositoryId: testRepositoryId,
       baseBranch: 'dev',
       issue: aLinearIssueLink(),
       source: 'linear',
@@ -431,6 +437,7 @@ describe('creating a job for a Linear issue', () => {
     // The same issue after it moved team: new identifier, new branch name.
     expect(() =>
       store.createJobForLinearIssue({
+        repositoryId: testRepositoryId,
         baseBranch: 'dev',
         issue: aLinearIssueLink({
           identifier: 'OPS-7',
@@ -448,6 +455,7 @@ describe('creating a job for a Linear issue', () => {
     const { store } = createTestContext()
 
     const first = store.createJobForLinearIssue({
+      repositoryId: testRepositoryId,
       baseBranch: 'dev',
       issue: aLinearIssueLink(),
       source: 'linear',
@@ -456,6 +464,7 @@ describe('creating a job for a Linear issue', () => {
     store.transitionJob({ actor: 'handler', jobId: first.id, to: 'cancelled' })
 
     const second = store.createJobForLinearIssue({
+      repositoryId: testRepositoryId,
       baseBranch: 'dev',
       issue: aLinearIssueLink(),
       source: 'linear',
@@ -535,6 +544,7 @@ describe('describing the issues intake is about to offer', () => {
 
   const take = (store: Store, id: string) =>
     store.createJobForLinearIssue({
+      repositoryId: testRepositoryId,
       baseBranch: 'dev',
       issue: anIssue(id),
       source: 'linear',

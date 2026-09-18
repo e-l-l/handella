@@ -31,6 +31,9 @@ const oneOf = (column: AnySQLiteColumn, values: readonly string[]): SQL =>
 const nullOrOneOf = (column: AnySQLiteColumn, values: readonly string[]): SQL =>
   sql`${column} is null or ${oneOf(column, values)}`
 
+/** States in which a Job holds no claim on its Canonical Branch. */
+const unclaimedJobStates: readonly string[] = ['intake', ...settledJobStates]
+
 export const appInstallation = sqliteTable(
   'app_installation',
   {
@@ -46,6 +49,33 @@ export const appInstallation = sqliteTable(
       'app_installation_singleton_key_check',
       sql`${table.singletonKey} = 1`,
     ),
+  ],
+)
+
+/**
+ * A checkout the Handler already has. Handella adopts it rather than cloning
+ * it, so the Handler's ssh and gh credentials stay theirs and Handella never
+ * handles a secret to reach a remote.
+ *
+ * masterplan.md:97 has V1 managing one primary repository. This is a table
+ * rather than a setting so the second one is a row instead of a migration.
+ * Distinct from `AppConfig.repositoryRoot`, which is Handella's own checkout.
+ *
+ * `path` is absolute because a worktree outlives the process that cut it, and
+ * a path resolved against a working directory is a path that moves.
+ */
+export const repositories = sqliteTable(
+  'repositories',
+  {
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    path: text('path').notNull().unique(),
+    defaultBaseBranch: text('default_base_branch').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    check('repositories_path_absolute_check', sql`${table.path} like '/%'`),
   ],
 )
 
@@ -73,6 +103,14 @@ export const jobs = sqliteTable(
     linearIssueId: text('linear_issue_id'),
     linearIssueUrl: text('linear_issue_url'),
     canonicalBranch: text('canonical_branch'),
+    /**
+     * Set to null rather than blocking when a repository is removed: a settled
+     * job keeps its history, and the store refuses the delete outright while a
+     * live job still references it.
+     */
+    repositoryId: text('repository_id').references(() => repositories.id, {
+      onDelete: 'set null',
+    }),
     baseBranch: text('base_branch').notNull(),
     queuePriority: integer('queue_priority'),
     worktreePath: text('worktree_path'),
@@ -102,6 +140,24 @@ export const jobs = sqliteTable(
       .where(
         sql`${table.linearIssueId} is not null and ${table.state} not in (${sql.raw(
           settledJobStates.map((state) => `'${state}'`).join(', '),
+        )})`,
+      ),
+    /**
+     * A Canonical Branch belongs to at most one job that has claimed it, which
+     * is what lets Dispatch claim in one transaction rather than reading and
+     * then writing: two dispatches racing for the same name, one wins here.
+     *
+     * `intake` is excluded as well as the settled states, because a Job that
+     * has not been dispatched has not claimed anything. ADR 0004 has Intake
+     * compute the name so the Handler sees it, and Dispatch fix it; two Jobs
+     * may sit in intake holding the same provisional guess, and only one of
+     * them can go on to own it.
+     */
+    uniqueIndex('jobs_claimed_canonical_branch_unique')
+      .on(table.repositoryId, table.canonicalBranch)
+      .where(
+        sql`${table.repositoryId} is not null and ${table.canonicalBranch} is not null and ${table.state} not in (${sql.raw(
+          unclaimedJobStates.map((state) => `'${state}'`).join(', '),
         )})`,
       ),
     index('jobs_state_suspension_idx').on(table.state, table.suspension),

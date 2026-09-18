@@ -1,4 +1,4 @@
-import type { Job, StatusResponse } from '@handella/contracts'
+import type { Job, Repository, StatusResponse } from '@handella/contracts'
 
 /**
  * The records more than one suite needs, typed against the contracts so a
@@ -33,6 +33,7 @@ export const aJob = (overrides: Partial<Job> = {}): Job => ({
   linearIssueKey: null,
   linearIssueId: null,
   linearIssueUrl: null,
+  repositoryId: null,
   canonicalBranch: 'ell/eng-412-fix-flaky-login-test',
   baseBranch: 'dev',
   queuePriority: null,
@@ -53,3 +54,15 @@ export const aLinearJob = (overrides: Partial<Job> = {}): Job =>
     linearIssueUrl: 'https://linear.app/acme/issue/ENG-412',
     ...overrides,
   })
+
+export const aRepository = (
+  overrides: Partial<Repository> = {},
+): Repository => ({
+  id: '9f1d2c3b-4a5e-4b6c-8d7e-0f1a2b3c4d5e',
+  name: 'acme monorepo',
+  path: '/Users/ell/workspace/work/monorepo',
+  defaultBaseBranch: 'dev',
+  createdAt: '2026-09-18T09:00:00.000Z',
+  updatedAt: '2026-09-18T09:00:00.000Z',
+  ...overrides,
+})

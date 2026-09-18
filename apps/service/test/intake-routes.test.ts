@@ -16,6 +16,7 @@ import {
   cleanupTestContexts,
   createFakeLinearAdapter,
   createTestContext,
+  testRepositoryId,
 } from './helpers.js'
 
 afterEach(cleanupTestContexts)
@@ -28,6 +29,7 @@ const issueId = 'b2b9e5a6-0f1e-4c6b-9a3f-2b1c4d5e6f70'
 const intake = {
   issueId,
   workClass: 'routine' as const,
+  repositoryId: testRepositoryId,
   baseBranch: 'dev',
 }
 
@@ -189,7 +191,12 @@ describe('an installation with no Linear API key', () => {
       app.inject({
         method: 'POST',
         url: '/api/intake/linear',
-        payload: { issueId: 'x', workClass: 'routine', baseBranch: 'dev' },
+        payload: {
+          issueId: 'x',
+          workClass: 'routine',
+          repositoryId: testRepositoryId,
+          baseBranch: 'dev',
+        },
       }),
       app.inject({
         method: 'POST',
@@ -198,6 +205,7 @@ describe('an installation with no Linear API key', () => {
           teamId: 't1',
           title: 'Anything',
           workClass: 'routine',
+          repositoryId: testRepositoryId,
           baseBranch: 'dev',
         },
       }),
@@ -435,6 +443,7 @@ describe('POST /api/intake/adhoc', () => {
         description: 'Nothing calls it any more.',
         priority: 3,
         workClass: 'feature',
+        repositoryId: testRepositoryId,
         baseBranch: 'dev',
       },
     })
@@ -477,6 +486,7 @@ describe('GET /api/intake/base-branches', () => {
     for (const [index, baseBranch] of ['dev', 'main', 'release/24'].entries()) {
       context.store.createJobForLinearIssue({
         baseBranch,
+        repositoryId: testRepositoryId,
         issue: aLinearIssueLink({
           branchName: `ell/eng-${index}-something`,
           id: `issue-${index}`,

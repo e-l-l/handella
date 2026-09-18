@@ -94,6 +94,29 @@ One pass of review comments on a Job's pull request, together with Handella's
 verdicts and any child pull request that answers them.
 _Avoid_: Review, feedback cycle
 
+**Repository**:
+A checkout on the Handler's machine that Handella cuts worktrees from. Handella
+adopts one the Handler already has rather than cloning it, so their own
+credentials reach the remote and Handella holds none.
+_Avoid_: Project, codebase, clone
+
+**Worktree**:
+The isolated working directory a Job is planned and implemented in, checked out
+at that Job's Canonical Branch. One per Job, created at Dispatch and kept until
+its pull request is confirmed merged.
+_Avoid_: Workspace, sandbox, checkout
+
+**Queue Position**:
+Where a Job sits among those waiting for a Slot. Set by the Handler, who may
+reorder the queue; a Job with no position waits behind every Job that has one.
+_Avoid_: Priority, rank
+
+**Slot**:
+One of the three concurrent places Codex may be working. Planning holds one as
+surely as implementing does, and a suspended Job holds none: its worktree is
+kept, not worked in.
+_Avoid_: Runner, worker, lane
+
 **Dispatch**:
 Committing a Job to execution: claiming its canonical branch, creating its
 worktree, and placing it in the queue.

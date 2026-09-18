@@ -9,6 +9,7 @@ import {
   fetchPlanVersions,
   jobKeys,
 } from '../api/jobs.ts'
+import { fetchRepositories, repositoryKeys } from '../api/repositories.ts'
 import { Chip } from '../components/Chip.tsx'
 import { Fact } from '../components/Fact.tsx'
 import { JobActions } from '../components/JobActions.tsx'
@@ -111,6 +112,15 @@ export function JobDetailPage() {
     queryFn: () => fetchPlanVersions(jobId),
     enabled: job.isSuccess,
   })
+  // Named rather than identified: the id is the link, but the name is what the
+  // Handler called the checkout.
+  const repositories = useQuery({
+    queryKey: repositoryKeys.all,
+    queryFn: fetchRepositories,
+  })
+  const repositoryName = repositories.data?.find(
+    (repository) => repository.id === job.data?.repositoryId,
+  )?.name
 
   if (job.isPending) {
     return (
@@ -203,12 +213,17 @@ export function JobDetailPage() {
                 label="Canonical branch"
                 value={job.data.canonicalBranch ?? 'not claimed yet'}
               />
+              <Fact label="Repository" value={repositoryName ?? 'not chosen'} />
               <Fact
                 label="Queue"
                 value={
-                  job.data.queuePriority === null
+                  job.data.state !== 'queued'
                     ? 'not queued'
-                    : `position ${job.data.queuePriority}`
+                    : job.data.queuePriority === null
+                      ? // In the queue but never reordered, so it waits behind
+                        // everything the Handler has put in an order.
+                        'waiting, unordered'
+                      : `position ${job.data.queuePriority}`
                 }
               />
               <Fact
@@ -229,7 +244,14 @@ export function JobDetailPage() {
               <Fact label="Sandbox" value="workspace-write" />
               <Fact
                 label="Worktree"
-                value={job.data.worktreePath ?? 'created at dispatch'}
+                value={
+                  job.data.worktreePath ??
+                  (job.data.state === 'intake'
+                    ? 'created at dispatch'
+                    : // Claimed, but the fetch and the cut have not finished or
+                      // did not survive a restart. Phase 7 reaps this.
+                      'not cut')
+                }
               />
             </dl>
           </Card>

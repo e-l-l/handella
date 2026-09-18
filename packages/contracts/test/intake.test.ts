@@ -13,6 +13,7 @@ import { aLinearIssueSummary } from './fixtures.js'
 const validLinearIntake = {
   issueId: 'b2b9e5a6-0f1e-4c6b-9a3f-2b1c4d5e6f70',
   workClass: 'routine',
+  repositoryId: '9f1d2c3b-4a5e-4b6c-8d7e-0f1a2b3c4d5e',
   baseBranch: 'dev',
 }
 
@@ -64,6 +65,7 @@ const validAdhoc = {
   teamId: 'b2b9e5a6-0f1e-4c6b-9a3f-2b1c4d5e6f70',
   title: 'Fix the flaky login test',
   workClass: 'feature',
+  repositoryId: '9f1d2c3b-4a5e-4b6c-8d7e-0f1a2b3c4d5e',
   baseBranch: 'dev',
 }
 

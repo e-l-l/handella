@@ -4,6 +4,7 @@ import {
   JobSchema,
   JobTransitionSchema,
   PlanVersionSchema,
+  QueueOrderRequestSchema,
   ReviewRoundSchema,
   RunbookSnapshotSchema,
   SuspendRequestSchema,
@@ -14,6 +15,7 @@ import {
   type FastifyPluginCallbackTypebox,
 } from '@fastify/type-provider-typebox'
 
+import type { Dispatcher } from '../domain/dispatch.js'
 import type { Store } from '../domain/store.js'
 
 const JobIdParamsSchema = Type.Object({ jobId: Type.String() })
@@ -23,17 +25,66 @@ const errorResponses = {
   409: ApiErrorSchema,
 }
 
-export const jobRoutes: FastifyPluginCallbackTypebox<{ store: Store }> = (
-  app,
-  options,
-  done,
-) => {
-  const { store } = options
+export const jobRoutes: FastifyPluginCallbackTypebox<{
+  dispatcher: Dispatcher
+  store: Store
+}> = (app, options, done) => {
+  const { dispatcher, store } = options
+
+  /**
+   * The whole order rather than one job's position: reordering a list by
+   * sending a single priority is two writes racing to renumber the same rows.
+   */
+  app.post(
+    '/api/queue/order',
+    {
+      schema: {
+        body: QueueOrderRequestSchema,
+        response: { 200: Type.Array(JobSchema), ...errorResponses },
+      },
+    },
+    async (request) => store.reorderQueue(request.body.jobIds),
+  )
 
   app.get(
     '/api/jobs',
     { schema: { response: { 200: Type.Array(JobSchema) } } },
     async () => store.listJobs(),
+  )
+
+  /**
+   * Dispatch is its own verb rather than a move to `queued`: CONTEXT.md:96-99
+   * defines it as three actions, and only one of them is a state change.
+   *
+   * 202 rather than 201, and rather than waiting: the claim has committed and
+   * the Job is queued, but cutting the worktree means fetching a remote, which
+   * on a large monorepo is seconds. The worktree path and any failure reach the
+   * dashboard over the event stream.
+   */
+  app.post(
+    '/api/jobs/:jobId/dispatch',
+    {
+      schema: {
+        params: JobIdParamsSchema,
+        response: {
+          202: JobSchema,
+          ...errorResponses,
+          502: ApiErrorSchema,
+          503: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const outcome = await dispatcher.dispatch(request.params.jobId)
+
+      // Failures are already turned into an attention item by the compensating
+      // write; this only catches that write itself failing, which is a bug.
+      outcome.worktree.catch((error: unknown) => {
+        request.log.error({ err: error }, 'Dispatch compensation failed')
+      })
+
+      return reply.code(202).send(outcome.job)
+    },
   )
 
   app.post(

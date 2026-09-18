@@ -28,6 +28,7 @@ const validJob = {
   linearIssueId: null,
   linearIssueUrl: null,
   canonicalBranch: null,
+  repositoryId: null,
   baseBranch: 'dev',
   queuePriority: null,
   worktreePath: null,

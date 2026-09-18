@@ -4,14 +4,19 @@ import type {
   LinearIssueSummary,
   LinearTeamSummary,
   LinearWorkflowStateSummary,
+  Repository,
 } from '@handella/contracts'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { installFakeEventSource } from './test/fakeEventSource.ts'
 import { aLinearJob as aJob, aStatus } from './test/fixtures.ts'
 import { renderAt } from './test/renderApp.tsx'
+import {
+  jsonResponse as json,
+  stubApi as stubSharedApi,
+} from './test/stubApi.ts'
 
 const anIssue = (
   overrides: Partial<LinearIssueSummary> = {},
@@ -51,6 +56,8 @@ interface Routes {
   jobs?: Job[]
   /** Overrides `issues` when a test cares what Handella knows about them. */
   offers?: IntakeIssue[]
+  /** The checkouts Intake can bind a job to; empty stands for none configured. */
+  repositories?: Repository[]
   /** What the cursor from the first page answers with. */
   nextPage?: IntakeIssue[]
   /** What a search answers with, when a test needs the list to change. */
@@ -60,72 +67,58 @@ interface Routes {
 }
 
 /**
- * The intake arms come before the `/api/jobs/` catch-all, which is prefix
- * matched and would otherwise swallow anything that merely starts the same way.
+ * The intake arms are handed to the shared stub as `extra`, so they are tried
+ * before its `/api/jobs/` catch-all, which is prefix matched and would
+ * otherwise swallow anything that merely starts the same way.
  */
-const stubApi = (routes: Routes = {}) => {
-  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-    const url = String(input)
-    const json = (body: unknown, status = 200) =>
-      Promise.resolve(
-        new Response(JSON.stringify(body), {
-          status,
-          headers: { 'content-type': 'application/json' },
-        }),
-      )
-
-    if (url === '/api/status')
-      return json(
-        aStatus({
-          integrations: { linear: { configured: routes.configured ?? true } },
-        }),
-      )
-    if (url.startsWith('/api/intake/linear/issues')) {
-      if (url.includes('cursor=')) {
-        return json({ issues: routes.nextPage ?? [], nextCursor: null })
+const stubApi = (routes: Routes = {}) =>
+  stubSharedApi({
+    jobs: routes.jobs,
+    repositories: routes.repositories,
+    status: aStatus({
+      integrations: { linear: { configured: routes.configured ?? true } },
+    }),
+    extra: (url, init) => {
+      if (url.startsWith('/api/intake/linear/issues')) {
+        if (url.includes('cursor=')) {
+          return json({ issues: routes.nextPage ?? [], nextCursor: null })
+        }
+        if (url.includes('search=') && routes.searchResults !== undefined) {
+          return json({ issues: routes.searchResults, nextCursor: null })
+        }
+        const offers =
+          routes.offers ??
+          (routes.issues ?? [anIssue()]).map((issue) => anOffer({ issue }))
+        return json({
+          issues: offers,
+          nextCursor: routes.nextPage === undefined ? null : 'page-2',
+        })
       }
-      if (url.includes('search=') && routes.searchResults !== undefined) {
-        return json({ issues: routes.searchResults, nextCursor: null })
+      if (/^\/api\/intake\/linear\/teams\/[^/]+\/states$/.test(url)) {
+        return json(
+          routes.states ?? [{ id: 'state-1', name: 'Todo', type: 'unstarted' }],
+        )
       }
-      const offers =
-        routes.offers ??
-        (routes.issues ?? [anIssue()]).map((issue) => anOffer({ issue }))
-      return json({
-        issues: offers,
-        nextCursor: routes.nextPage === undefined ? null : 'page-2',
-      })
-    }
-    if (/^\/api\/intake\/linear\/teams\/[^/]+\/states$/.test(url)) {
-      return json(
-        routes.states ?? [{ id: 'state-1', name: 'Todo', type: 'unstarted' }],
-      )
-    }
-    if (url === '/api/intake/linear/teams') {
-      return json(
-        routes.teams ?? [{ id: 'team-1', key: 'ENG', name: 'Engineering' }],
-      )
-    }
-    if (url === '/api/intake/base-branches') {
-      return json({ defaultBranch: 'dev', recent: ['main'] })
-    }
-    if (url === '/api/intake/linear' && init?.method === 'POST') {
-      const body = JSON.parse(String(init.body)) as { issueId: string }
-      const failure = routes.intakeFailures?.[body.issueId]
-      if (failure !== undefined) return json(failure, 409)
-      return json(aJob(), 201)
-    }
-    if (url === '/api/intake/adhoc' && init?.method === 'POST') {
-      return json(aJob({ source: 'adhoc' }), 201)
-    }
-    if (url === '/api/attention') return json([])
-    if (url === '/api/jobs') return json(routes.jobs ?? [])
-    if (url.endsWith('/transitions')) return json([])
-    if (url.startsWith('/api/jobs/')) return json((routes.jobs ?? [])[0])
-    return Promise.resolve(new Response('{}', { status: 404 }))
+      if (url === '/api/intake/linear/teams') {
+        return json(
+          routes.teams ?? [{ id: 'team-1', key: 'ENG', name: 'Engineering' }],
+        )
+      }
+      if (url === '/api/intake/base-branches') {
+        return json({ defaultBranch: 'dev', recent: ['main'] })
+      }
+      if (url === '/api/intake/linear' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { issueId: string }
+        const failure = routes.intakeFailures?.[body.issueId]
+        if (failure !== undefined) return json(failure, 409)
+        return json(aJob(), 201)
+      }
+      if (url === '/api/intake/adhoc' && init?.method === 'POST') {
+        return json(aJob({ source: 'adhoc' }), 201)
+      }
+      return undefined
+    },
   })
-  vi.stubGlobal('fetch', fetchMock)
-  return fetchMock
-}
 
 const postsTo = (fetchMock: ReturnType<typeof stubApi>, path: string) =>
   fetchMock.mock.calls
@@ -401,8 +394,18 @@ describe('creating jobs from a selection', () => {
 
     await waitFor(() => {
       expect(postsTo(fetchMock, '/api/intake/linear')).toEqual([
-        { issueId: 'issue-412', workClass: 'routine', baseBranch: 'dev' },
-        { issueId: 'issue-500', workClass: 'feature', baseBranch: 'main' },
+        {
+          issueId: 'issue-412',
+          workClass: 'routine',
+          repositoryId: '9f1d2c3b-4a5e-4b6c-8d7e-0f1a2b3c4d5e',
+          baseBranch: 'dev',
+        },
+        {
+          issueId: 'issue-500',
+          workClass: 'feature',
+          repositoryId: '9f1d2c3b-4a5e-4b6c-8d7e-0f1a2b3c4d5e',
+          baseBranch: 'main',
+        },
       ])
     })
   })
@@ -503,6 +506,7 @@ describe('ad hoc intake', () => {
           teamId: 'team-1',
           title: 'Retire the legacy exporter',
           workClass: 'feature',
+          repositoryId: '9f1d2c3b-4a5e-4b6c-8d7e-0f1a2b3c4d5e',
           baseBranch: 'dev',
           priority: 0,
         },

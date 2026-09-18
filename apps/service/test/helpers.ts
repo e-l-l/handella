@@ -6,14 +6,24 @@ import { join } from 'node:path'
 import type { CreateJob, DomainEvent } from '@handella/contracts'
 
 import { buildApp } from '../src/app.js'
-import { createFakeLinearAdapter } from './linear-fake.js'
+import { createFakeGitAdapter } from './git-fake.js'
+import {
+  aLinearIssue,
+  aLinearIssueLink,
+  createFakeLinearAdapter,
+} from './linear-fake.js'
 import {
   defaultMigrationsPath,
   openDatabase,
   type DatabaseContext,
   type StatusSource,
 } from '../src/database/database.js'
-import { reviewRounds, runbookSnapshots } from '../src/database/schema.js'
+import {
+  repositories,
+  reviewRounds,
+  runbookSnapshots,
+} from '../src/database/schema.js'
+import { createDispatcher } from '../src/domain/dispatch.js'
 import { createStore, type Store } from '../src/domain/store.js'
 import {
   createBroadcaster,
@@ -30,6 +40,14 @@ export interface TestContext {
   published: DomainEvent[]
   store: Store
 }
+
+/**
+ * The repository every test context is born with. Seeded rather than created
+ * through the store so its id is a constant the request payloads can name,
+ * which is what keeps Intake's bodies literals instead of fixtures.
+ */
+export const testRepositoryId = '9f1d2c3b-4a5e-4b6c-8d7e-0f1a2b3c4d5e'
+export const testRepositoryPath = '/tmp/handella-test-repository'
 
 const temporaryDirectories: string[] = []
 const openContexts: DatabaseContext[] = []
@@ -57,6 +75,18 @@ export function createTestContext(
     migrationsPath: defaultMigrationsPath(repositoryRoot),
   })
   openContexts.push(database)
+
+  database.drizzle
+    .insert(repositories)
+    .values({
+      id: testRepositoryId,
+      name: 'acme monorepo',
+      path: testRepositoryPath,
+      defaultBaseBranch: 'dev',
+      createdAt: new Date('2026-09-18T09:00:00.000Z'),
+      updatedAt: new Date('2026-09-18T09:00:00.000Z'),
+    })
+    .run()
 
   const inner = createBroadcaster()
   const published: DomainEvent[] = []
@@ -100,9 +130,18 @@ export async function buildTestApp(
 ): Promise<{ app: App; context: TestContext; store: Store }> {
   const { context: given, ...appOverrides } = overrides
   const context = given ?? createTestContext()
+  const linear = createFakeLinearAdapter()
+  const git = createFakeGitAdapter()
   const app = await buildApp({
     broadcaster: context.broadcaster,
-    linear: createFakeLinearAdapter(),
+    dispatcher: createDispatcher({
+      git,
+      linear,
+      store: context.store,
+      worktreeRoot: aTemporaryDirectory('handella-worktrees-'),
+    }),
+    git,
+    linear,
     statusSource: healthyStatusSource,
     store: context.store,
     version: '0.1.0',
@@ -122,6 +161,7 @@ export async function cleanupTestContexts(): Promise<void> {
   }
 }
 
+export * from './git-fake.js'
 export * from './linear-fake.js'
 
 export const anIntakeJob = (overrides: Partial<CreateJob> = {}): CreateJob => ({
@@ -141,6 +181,55 @@ export const aDispatchableJob = (
     linearIssueKey: 'ENG-412',
     ...overrides,
   })
+
+/**
+ * One issue per queued Job. Each needs its own Linear identity: two Jobs for
+ * one issue would take ADR 0004's suffix rather than queueing side by side.
+ */
+export const aQueueableIssue = (index: number) =>
+  aLinearIssue({
+    branchName: `ell/eng-${index}-something`,
+    id: `0000000${index}-0000-4000-8000-00000000000${index}`,
+    identifier: `ENG-${index}`,
+    title: `Job ${index}`,
+  })
+
+/**
+ * `count` Jobs taken on and dispatched, in that order, with their worktrees
+ * cut — the state every queue and scheduler test starts from. Returns the ids
+ * in the order they were taken on, which is the order the queue reads them in
+ * before anyone reorders it.
+ */
+export const aDispatchedQueue = async (
+  context: TestContext,
+  count: number,
+): Promise<string[]> => {
+  const issues = Array.from({ length: count }, (_, index) =>
+    aQueueableIssue(index),
+  )
+  const dispatcher = createDispatcher({
+    git: createFakeGitAdapter(),
+    linear: createFakeLinearAdapter({ issues }),
+    store: context.store,
+    worktreeRoot: aTemporaryDirectory('handella-worktrees-'),
+  })
+
+  const ids: string[] = []
+  for (const issue of issues) {
+    const job = context.store.createJobForLinearIssue({
+      baseBranch: 'dev',
+      issue: aLinearIssueLink(issue),
+      repositoryId: testRepositoryId,
+      source: 'linear',
+      workClass: 'routine',
+    })
+    ids.push(job.id)
+    await (
+      await dispatcher.dispatch(job.id)
+    ).worktree
+  }
+  return ids
+}
 
 /**
  * Nothing writes a snapshot or a review round until Phases 5 and 11, so the

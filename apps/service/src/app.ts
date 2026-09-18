@@ -5,12 +5,15 @@ import {
 } from '@fastify/type-provider-typebox'
 import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 
+import type { GitAdapter } from './adapters/git.js'
 import type { LinearAdapter } from './adapters/linear.js'
 import type { StatusSource } from './database/database.js'
 import { DomainError } from './domain/errors.js'
+import type { Dispatcher } from './domain/dispatch.js'
 import type { Store } from './domain/store.js'
 import type { Broadcaster } from './events/broadcaster.js'
 import { attentionRoutes } from './routes/attention.js'
+import { repositoryRoutes } from './routes/repositories.js'
 import { eventRoutes } from './routes/events.js'
 import { intakeRoutes } from './routes/intake.js'
 import { jobRoutes } from './routes/jobs.js'
@@ -19,6 +22,8 @@ import { statusRoutes } from './routes/status.js'
 interface BuildAppOptions {
   broadcaster: Broadcaster
   dashboardPath?: string
+  dispatcher: Dispatcher
+  git: GitAdapter
   linear: LinearAdapter
   logger?: FastifyServerOptions['logger']
   startedAt?: Date
@@ -77,9 +82,14 @@ export async function buildApp(options: BuildAppOptions) {
     statusSource: options.statusSource,
     version: options.version,
   })
-  await app.register(jobRoutes, { store: options.store })
+  await app.register(jobRoutes, {
+    dispatcher: options.dispatcher,
+    store: options.store,
+  })
   await app.register(attentionRoutes, { store: options.store })
+  await app.register(repositoryRoutes, { store: options.store })
   await app.register(intakeRoutes, {
+    git: options.git,
     linear: options.linear,
     store: options.store,
   })

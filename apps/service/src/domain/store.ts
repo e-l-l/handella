@@ -6,6 +6,8 @@ import {
   defaultBaseBranch,
   isSettledJobState,
   isTerminalJobState,
+  settledJobStates,
+  orderQueue,
   type AttentionItem,
   type AttentionItemKind,
   type BaseBranchSuggestions,
@@ -17,20 +19,26 @@ import {
   type JobState,
   type JobSuspension,
   type JobTransitionRecord,
+  type CreateRepository,
   type PlanVersion,
+  type Repository,
   type ReviewRound,
   type RunbookSnapshot,
   type TransitionActor,
+  type UpdateRepository,
 } from '@handella/contracts'
 import {
   and,
   asc,
+  count,
   desc,
   eq,
   inArray,
   isNull,
   max,
   ne,
+  notInArray,
+  sql,
   type SQL,
 } from 'drizzle-orm'
 import type { SQLiteColumn, SQLiteTable } from 'drizzle-orm/sqlite-core'
@@ -39,9 +47,14 @@ import type { HandellaDatabase } from '../database/database.js'
 import type { Broadcaster } from '../events/broadcaster.js'
 import {
   attentionItemNotFound,
+  canonicalBranchClaimed,
+  dispatchNeedsLinearIssue,
+  dispatchNeedsRepository,
   illegalTransition,
   jobNotFound,
   linearIssueAlreadyLinked,
+  repositoryInUse,
+  repositoryNotFound,
   stateConflict,
   suspensionNotAllowed,
   transitionGuardFailed,
@@ -51,11 +64,13 @@ import {
   jobTransitions,
   jobs,
   planVersions,
+  repositories,
   reviewRounds,
   runbookSnapshots,
 } from '../database/schema.js'
 
 type JobRow = typeof jobs.$inferSelect
+type RepositoryRow = typeof repositories.$inferSelect
 type AttentionRow = typeof attentionItems.$inferSelect
 type TransitionRow = typeof jobTransitions.$inferSelect
 type PlanRow = typeof planVersions.$inferSelect
@@ -106,6 +121,23 @@ export interface IssueIntakeFacts {
   nextRound: number
 }
 
+/**
+ * Dispatch in one transaction: the Canonical Branch is recomputed from the name
+ * Linear holds now, checked against every live claim, and fixed — all before
+ * anything touches git. ADR 0004 has this computed twice over a Job's life, and
+ * this is the second and final time.
+ */
+export interface ClaimForDispatchInput {
+  /** Linear's current branch name for the issue, unsuffixed. */
+  branchName: string
+  jobId: string
+}
+
+export interface DispatchClaim {
+  job: Job
+  repository: Repository
+}
+
 export interface SuspendJobInput {
   jobId: string
   reason?: string | undefined
@@ -113,7 +145,17 @@ export interface SuspendJobInput {
 }
 
 export interface Store {
+  /** The compensating write: git failed, so the claim is given back. */
+  abandonDispatch(input: { jobId: string; reason: string }): Job
+  claimForDispatch(input: ClaimForDispatchInput): DispatchClaim
   createJob(input: CreateJob): Job
+  /** Phase 5 owns the content's shape; this only keeps the revisions in order. */
+  createPlanVersion(input: { content: string; jobId: string }): PlanVersion
+  createRepository(input: CreateRepository): Repository
+  deleteRepository(repositoryId: string): void
+  getRepository(repositoryId: string): Repository
+  listRepositories(): Repository[]
+  updateRepository(repositoryId: string, input: UpdateRepository): Repository
   createJobForLinearIssue(input: CreateJobForLinearIssueInput): Job
   describeIssuesForIntake(
     issueIds: readonly string[],
@@ -126,6 +168,13 @@ export interface Store {
   listPlanVersions(jobId: string): PlanVersion[]
   listReviewRounds(jobId: string): ReviewRound[]
   listRunbookSnapshots(jobId: string): RunbookSnapshot[]
+  recordWorktree(input: { jobId: string; worktreePath: string }): Job
+  /**
+   * The whole order in one write, so two jobs can never share a position.
+   * Answers with the queue as it now stands; only the rows that actually
+   * changed are announced.
+   */
+  reorderQueue(jobIds: readonly string[]): Job[]
   resolveAttentionItem(attentionItemId: string): AttentionItem
   resumeJob(jobId: string): Job
   suspendJob(input: SuspendJobInput): Job
@@ -196,11 +245,21 @@ const toJob = (row: JobRow): Job => ({
   linearIssueId: row.linearIssueId ?? null,
   linearIssueUrl: row.linearIssueUrl ?? null,
   canonicalBranch: row.canonicalBranch ?? null,
+  repositoryId: row.repositoryId ?? null,
   baseBranch: row.baseBranch,
   queuePriority: row.queuePriority ?? null,
   worktreePath: row.worktreePath ?? null,
   codexSessionId: row.codexSessionId ?? null,
   originalPrUrl: row.originalPrUrl ?? null,
+  createdAt: row.createdAt.toISOString(),
+  updatedAt: row.updatedAt.toISOString(),
+})
+
+const toRepository = (row: RepositoryRow): Repository => ({
+  id: row.id,
+  name: row.name,
+  path: row.path,
+  defaultBaseBranch: row.defaultBaseBranch,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
 })
@@ -411,6 +470,23 @@ export function createStore(options: CreateStoreOptions): Store {
     }
   }
 
+  const readRepository = (
+    executor: Executor,
+    repositoryId: string,
+  ): RepositoryRow => {
+    const row = executor
+      .select()
+      .from(repositories)
+      .where(eq(repositories.id, repositoryId))
+      .get()
+
+    if (row === undefined) {
+      throw repositoryNotFound(repositoryId)
+    }
+
+    return row
+  }
+
   /** Both creation paths land here, so a job is only ever born one way. */
   const insertJob = (
     tx: Transaction,
@@ -457,6 +533,9 @@ export function createStore(options: CreateStoreOptions): Store {
           linearIssueId: null,
           linearIssueUrl: null,
           canonicalBranch: input.canonicalBranch ?? null,
+          // The recovery path names no repository for the same reason it names
+          // no issue id: a job it minted can never be dispatched.
+          repositoryId: null,
           baseBranch: input.baseBranch,
           queuePriority: null,
           worktreePath: null,
@@ -470,9 +549,356 @@ export function createStore(options: CreateStoreOptions): Store {
       })
     },
 
+    /**
+     * The claim. Everything here is one transaction because the three questions
+     * it answers — which round this Job is, whether the name is free, and
+     * whether this Job may move — are one question asked of the same rows, and
+     * answering them separately is what lets two dispatches both win.
+     */
+    claimForDispatch(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        if (current.repositoryId === null) throw dispatchNeedsRepository()
+        if (current.linearIssueId === null) throw dispatchNeedsLinearIssue()
+
+        if (!canTransition(current.state, 'queued')) {
+          throw illegalTransition(current.state, 'queued')
+        }
+
+        const repository = readRepository(tx, current.repositoryId)
+
+        // ADR 0004: the round is this Job's position among every Job the issue
+        // has ever had, settled ones included. Read rather than taken from
+        // Intake, because another Job for the same issue may have started in
+        // between.
+        //
+        // Counted by rowid rather than by `created_at`, which is stored to the
+        // millisecond: two Jobs taken in the same tick tie, and a tie broken by
+        // a random uuid is not the order they were created in. Insertion order
+        // is the thing being asked about, and rowid is what records it.
+        const round =
+          tx
+            .select({ value: count() })
+            .from(jobs)
+            .where(
+              and(
+                eq(jobs.linearIssueId, current.linearIssueId),
+                sql`rowid <= (select rowid from ${jobs} where ${jobs.id} = ${current.id})`,
+              ),
+            )
+            .get()?.value ?? 1
+
+        const canonicalBranch = canonicalBranchForRound(input.branchName, round)
+
+        // The unique index is the backstop; this is the typed answer. Asked of
+        // live Jobs only, for the same reason the index excludes settled ones.
+        const held = tx
+          .select({ id: jobs.id, state: jobs.state })
+          .from(jobs)
+          .where(
+            and(
+              eq(jobs.repositoryId, current.repositoryId),
+              eq(jobs.canonicalBranch, canonicalBranch),
+              ne(jobs.id, current.id),
+            ),
+          )
+          .all()
+          // Agrees with `jobs_claimed_canonical_branch_unique`: a Job still in
+          // intake is holding a provisional name, not a claim.
+          .find(
+            (row) => row.state !== 'intake' && !isSettledJobState(row.state),
+          )
+
+        if (held !== undefined) {
+          throw canonicalBranchClaimed(canonicalBranch)
+        }
+
+        const updated = tx
+          .update(jobs)
+          .set({ canonicalBranch, state: 'queued', updatedAt: now })
+          .where(and(eq(jobs.id, current.id), eq(jobs.state, current.state)))
+          .run()
+
+        if (updated.changes === 0) {
+          throw stateConflict(current.state)
+        }
+
+        tx.insert(jobTransitions)
+          .values({
+            id: newId(),
+            jobId: current.id,
+            fromState: current.state,
+            toState: 'queued',
+            actor: 'handler',
+            reason: 'Dispatched',
+            occurredAt: now,
+          })
+          .run()
+
+        const next: JobRow = {
+          ...current,
+          canonicalBranch,
+          state: 'queued',
+          updatedAt: now,
+        }
+        syncLifecycleAttention(tx, next, now, events)
+
+        const job = toJob(next)
+        events.push(jobChanged(job))
+        return { job, repository: toRepository(repository) }
+      })
+    },
+
+    reorderQueue(jobIds) {
+      return commit((tx, events, now) => {
+        const queued = tx
+          .select()
+          .from(jobs)
+          .where(eq(jobs.state, 'queued'))
+          .all()
+
+        const byId = new Map(queued.map((row) => [row.id, row]))
+        for (const jobId of jobIds) {
+          if (!byId.has(jobId)) {
+            // Either it is not there or it is not waiting for a slot. Both are
+            // the same answer to the Handler: this list is no longer the queue.
+            readJob(tx, jobId)
+            throw transitionGuardFailed(
+              `Job ${jobId} is not in the queue, so it cannot be given a position`,
+            )
+          }
+        }
+
+        // Cleared first, so a job dropped from the list loses its position
+        // rather than keeping a stale one that would jump the ordered ones.
+        const positions = new Map(
+          jobIds.map((jobId, index) => [jobId, index + 1]),
+        )
+
+        const reordered: Job[] = []
+        for (const row of queued) {
+          const queuePriority = positions.get(row.id) ?? null
+          const changed = row.queuePriority !== queuePriority
+
+          if (changed) {
+            tx.update(jobs)
+              .set({ queuePriority, updatedAt: now })
+              .where(eq(jobs.id, row.id))
+              .run()
+          }
+
+          const job = toJob({
+            ...row,
+            queuePriority,
+            updatedAt: changed ? now : row.updatedAt,
+          })
+          // Announced only when it moved, so a no-op reorder is silent on the
+          // event stream rather than invalidating every list in the dashboard.
+          if (changed) events.push(jobChanged(job))
+          reordered.push(job)
+        }
+
+        return orderQueue(reordered)
+      })
+    },
+
+    recordWorktree(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        tx.update(jobs)
+          .set({ worktreePath: input.worktreePath, updatedAt: now })
+          .where(eq(jobs.id, input.jobId))
+          .run()
+
+        const job = toJob({
+          ...current,
+          worktreePath: input.worktreePath,
+          updatedAt: now,
+        })
+        events.push(jobChanged(job))
+        return job
+      })
+    },
+
+    /**
+     * Git failed after the claim committed, so the claim is given back: the Job
+     * returns to intake and releases its branch, and the Handler is told why
+     * rather than finding a queued job with no worktree.
+     */
+    abandonDispatch(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        tx.update(jobs)
+          .set({ canonicalBranch: null, state: 'intake', updatedAt: now })
+          .where(eq(jobs.id, input.jobId))
+          .run()
+
+        tx.insert(jobTransitions)
+          .values({
+            id: newId(),
+            jobId: input.jobId,
+            fromState: current.state,
+            toState: 'intake',
+            actor: 'system',
+            reason: input.reason,
+            occurredAt: now,
+          })
+          .run()
+
+        const next: JobRow = {
+          ...current,
+          canonicalBranch: null,
+          state: 'intake',
+          updatedAt: now,
+        }
+
+        raiseItem(
+          tx,
+          openItemsOfKinds(tx, input.jobId, ['failure']),
+          {
+            body: input.reason,
+            jobId: input.jobId,
+            rule: {
+              kind: 'failure',
+              title: 'Dispatch could not cut a worktree',
+            },
+          },
+          now,
+          events,
+        )
+
+        const job = toJob(next)
+        events.push(jobChanged(job))
+        return job
+      })
+    },
+
+    createPlanVersion(input) {
+      return commit((tx, events, now) => {
+        const job = readJob(tx, input.jobId)
+
+        // Revisions are numbered per job and every one is kept, so the next one
+        // is read from the highest rather than assumed from whatever the caller
+        // last saw.
+        const highest =
+          tx
+            .select({ value: max(planVersions.revision) })
+            .from(planVersions)
+            .where(eq(planVersions.jobId, input.jobId))
+            .get()?.value ?? 0
+        const revision = highest + 1
+
+        const row: PlanRow = {
+          id: newId(),
+          jobId: input.jobId,
+          revision,
+          content: input.content,
+          feedback: null,
+          approvalState: 'pending',
+          approvedAt: null,
+          createdAt: now,
+        }
+
+        tx.insert(planVersions).values(row).run()
+        events.push(jobChanged(toJob(job)))
+        return toPlanVersion(row)
+      })
+    },
+
+    createRepository(input) {
+      return commit((tx, _events, now) => {
+        const row: RepositoryRow = {
+          id: newId(),
+          name: input.name,
+          path: input.path,
+          defaultBaseBranch: input.defaultBaseBranch,
+          createdAt: now,
+          updatedAt: now,
+        }
+
+        tx.insert(repositories).values(row).run()
+        return toRepository(row)
+      })
+    },
+
+    listRepositories() {
+      return database
+        .select()
+        .from(repositories)
+        .orderBy(asc(repositories.name))
+        .all()
+        .map(toRepository)
+    },
+
+    getRepository(repositoryId) {
+      return toRepository(readRepository(database, repositoryId))
+    },
+
+    updateRepository(repositoryId, input) {
+      return commit((tx, _events, now) => {
+        const current = readRepository(tx, repositoryId)
+        const next: RepositoryRow = {
+          ...current,
+          name: input.name ?? current.name,
+          path: input.path ?? current.path,
+          defaultBaseBranch:
+            input.defaultBaseBranch ?? current.defaultBaseBranch,
+          updatedAt: now,
+        }
+
+        tx.update(repositories)
+          .set({
+            name: next.name,
+            path: next.path,
+            defaultBaseBranch: next.defaultBaseBranch,
+            updatedAt: next.updatedAt,
+          })
+          .where(eq(repositories.id, repositoryId))
+          .run()
+
+        return toRepository(next)
+      })
+    },
+
+    /**
+     * A settled job keeps its history and lets the repository go — the foreign
+     * key nulls its column. A live job is still working in a worktree cut from
+     * this checkout, so the delete is refused rather than stranding it.
+     */
+    deleteRepository(repositoryId) {
+      commit((tx) => {
+        readRepository(tx, repositoryId)
+
+        const live = tx
+          .select({ id: jobs.id })
+          .from(jobs)
+          .where(
+            and(
+              eq(jobs.repositoryId, repositoryId),
+              notInArray(jobs.state, [...settledJobStates]),
+            ),
+          )
+          .limit(1)
+          .get()
+
+        if (live !== undefined) {
+          throw repositoryInUse(repositoryId, live.id)
+        }
+
+        tx.delete(repositories).where(eq(repositories.id, repositoryId)).run()
+      })
+    },
+
     createJobForLinearIssue(input) {
       return commit((tx, events, now) => {
         const { issue } = input
+
+        // Read inside the unit of work so a repository removed mid-intake is a
+        // typed 404 rather than a foreign key violation surfacing as a 500.
+        readRepository(tx, input.repositoryId)
 
         // Every job this issue has ever had, read once: the live holder and
         // the round are two questions about the same rows, and answering them
@@ -518,6 +944,7 @@ export function createStore(options: CreateStoreOptions): Store {
           linearIssueId: issue.id,
           linearIssueUrl: issue.url,
           canonicalBranch,
+          repositoryId: input.repositoryId,
           baseBranch: input.baseBranch,
           queuePriority: null,
           worktreePath: null,

@@ -22,6 +22,7 @@ import {
   intakeKeys,
 } from '../api/intake.ts'
 import { jobKeys } from '../api/jobs.ts'
+import { fetchRepositories, repositoryKeys } from '../api/repositories.ts'
 import { fetchSystemStatus, statusKeys } from '../api/status.ts'
 import { AdhocIssueForm } from '../components/AdhocIssueForm.tsx'
 import { BaseBranchField } from '../components/BaseBranchField.tsx'
@@ -35,6 +36,7 @@ import {
   cardClass,
   cardTitleClass,
   emptyPanelClass,
+  labelClass,
   pillFieldClass,
   primaryButtonClass,
   screenClass,
@@ -45,6 +47,14 @@ import {
 } from '../styles.ts'
 
 type Outcome = { kind: 'created' } | { kind: 'failed'; message: string }
+
+/**
+ * What the Handler chooses per issue. The repository is not here: it is chosen
+ * once for the whole panel, because masterplan.md:97 has V1 managing one
+ * primary repository and a batch split across checkouts is not a thing Intake
+ * is for.
+ */
+type IssueChoices = Omit<IntakeChoices, 'repositoryId'>
 
 /**
  * A page of issues costs the local service one request per issue to resolve
@@ -66,7 +76,7 @@ function SearchIcon() {
   return (
     <svg
       aria-hidden="true"
-      className="size-[15px] flex-none text-ink-5"
+      className="size-3.75 flex-none text-ink-5"
       fill="none"
       stroke="currentColor"
       strokeWidth="2"
@@ -124,10 +134,12 @@ function IntakeCard({
   choices,
   offer,
   onChange,
+  repositoryId,
 }: {
-  choices: IntakeChoices
+  choices: IssueChoices
   offer: IntakeIssue | undefined
-  onChange: (patch: Partial<IntakeChoices>) => void
+  onChange: (patch: Partial<IssueChoices>) => void
+  repositoryId: string
 }) {
   const label = offer?.issue.identifier ?? 'this issue'
   const blocked = blockedReason(offer)
@@ -156,6 +168,7 @@ function IntakeCard({
       <BaseBranchField
         label={`Base branch for ${label}`}
         onChange={(baseBranch) => onChange({ baseBranch })}
+        repositoryId={repositoryId}
         value={choices.baseBranch}
       />
 
@@ -197,9 +210,8 @@ export function IntakePage() {
   const [searchInput, setSearchInput] = useState('')
   const [teamId, setTeamId] = useState('')
   const [stateId, setStateId] = useState('')
-  const [selections, setSelections] = useState<Record<string, IntakeChoices>>(
-    {},
-  )
+  const [selections, setSelections] = useState<Record<string, IssueChoices>>({})
+  const [repositoryId, setRepositoryId] = useState('')
   const queryClient = useQueryClient()
 
   const search = useDebounced(searchInput)
@@ -208,6 +220,18 @@ export function IntakePage() {
     queryFn: fetchSystemStatus,
   })
   const configured = status.data?.integrations.linear.configured ?? false
+
+  // Local, so it answers whether or not Linear is set up.
+  const repositories = useQuery({
+    queryKey: repositoryKeys.all,
+    queryFn: fetchRepositories,
+  })
+
+  // The first repository is the primary one until the Handler says otherwise.
+  // Resolved on read rather than in an effect, so the first render already has
+  // a value and nothing submits an empty id.
+  const chosenRepositoryId =
+    repositoryId !== '' ? repositoryId : (repositories.data?.[0]?.id ?? '')
 
   // Shared with the ad hoc form's query, which asks for the same teams under
   // the same key, so opening intake fetches them once.
@@ -277,7 +301,7 @@ export function IntakePage() {
     })
   }
 
-  const amend = (issueId: string, patch: Partial<IntakeChoices>) => {
+  const amend = (issueId: string, patch: Partial<IssueChoices>) => {
     setSelections((current) => {
       const existing = current[issueId]
       if (existing === undefined) return current
@@ -296,6 +320,7 @@ export function IntakePage() {
         entries.map(([issueId, selection]) =>
           createJobFromLinearIssue({
             issueId,
+            repositoryId: chosenRepositoryId,
             baseBranch: selection.baseBranch,
             workClass: selection.workClass,
           }),
@@ -334,7 +359,7 @@ export function IntakePage() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: jobKeys.all }),
         queryClient.invalidateQueries({ queryKey: intakeKeys.issuesAll }),
-        queryClient.invalidateQueries({ queryKey: intakeKeys.baseBranches }),
+        queryClient.invalidateQueries({ queryKey: intakeKeys.baseBranchesAll }),
       ])
     },
   })
@@ -495,15 +520,40 @@ export function IntakePage() {
 
         <div className="mt-8 flex flex-col gap-3.5">
           <h2 className="text-[16px] font-semibold">Ad hoc work</h2>
-          <AdhocIssueForm />
+          <AdhocIssueForm repositoryId={chosenRepositoryId} />
         </div>
       </section>
 
       <aside className="flex flex-col gap-[18px] border-line bg-deep px-[26px] pb-8 pt-[26px] min-[1200px]:border-l">
         {/* Intake, not Dispatch: this panel commits the Job record and nothing
             else. Claiming the branch, cutting the worktree and taking a queue
-            position are Dispatch's, and arrive with Phase 4. */}
+            position are Dispatch's, and happen from the job page. */}
         <h2 className="text-[16px] font-semibold">Intake</h2>
+
+        {/* Chosen once for the panel rather than per issue: a base branch means
+            nothing without the checkout it is on, and V1 manages one primary
+            repository. */}
+        {repositories.data?.length === 0 ? (
+          <p className={amberBannerClass} role="alert">
+            No repository is configured, so nothing can be taken on yet. Add one
+            in <Link to="/system">System</Link>.
+          </p>
+        ) : (
+          <label className="flex flex-col gap-2">
+            <span className={labelClass}>Repository</span>
+            <select
+              className={pillFieldClass}
+              onChange={(event) => setRepositoryId(event.target.value)}
+              value={chosenRepositoryId}
+            >
+              {(repositories.data ?? []).map((repository) => (
+                <option key={repository.id} value={repository.id}>
+                  {repository.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         {selected.length === 0 ? (
           <p className={emptyPanelClass}>
@@ -524,13 +574,16 @@ export function IntakePage() {
                 key={issueId}
                 offer={byIssueId.get(issueId)}
                 onChange={(patch) => amend(issueId, patch)}
+                repositoryId={chosenRepositoryId}
               />
             ))}
 
             <div className="mt-auto flex flex-col gap-2.5">
               <button
                 className={`w-full ${primaryButtonClass} py-3.5 text-[14px]`}
-                disabled={create.isPending || blocked}
+                disabled={
+                  create.isPending || blocked || chosenRepositoryId === ''
+                }
                 type="submit"
               >
                 {selected.length === 1

@@ -63,7 +63,14 @@ const trimmedOrUndefined = (value: string): string | undefined => {
  * gives it to the Codex adapter Phase 5 introduces, so until then the Handler
  * picks.
  */
-export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
+export function AdhocIssueForm({
+  onCreated,
+  repositoryId,
+}: {
+  onCreated?: () => void
+  /** Chosen once for the whole panel, so the ad hoc issue lands in the same checkout. */
+  repositoryId: string
+}) {
   const [draft, setDraft] = useState(emptyDraft)
   const queryClient = useQueryClient()
   const teams = useQuery({
@@ -83,6 +90,7 @@ export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
         teamId,
         title: draft.title,
         workClass: draft.workClass,
+        repositoryId,
         baseBranch: draft.baseBranch,
         ...(description === undefined ? {} : { description }),
         priority: draft.priority,
@@ -174,6 +182,7 @@ export function AdhocIssueForm({ onCreated }: { onCreated?: () => void }) {
 
       <BaseBranchField
         onChange={(value) => update('baseBranch', value)}
+        repositoryId={repositoryId}
         value={draft.baseBranch}
       />
 
