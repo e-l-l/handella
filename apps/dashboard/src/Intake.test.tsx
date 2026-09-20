@@ -79,6 +79,7 @@ const stubApi = (routes: Routes = {}) =>
       integrations: {
         linear: { configured: routes.configured ?? true },
         codex: { configured: true },
+        github: { configured: true },
       },
     }),
     extra: (url, init) => {

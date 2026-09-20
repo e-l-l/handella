@@ -11,6 +11,12 @@ export interface FakeGitAdapter extends GitAdapter {
   readonly fetched: { base: string; repositoryPath: string }[]
   /** What the next git call should fail with, for the compensation path. */
   failNextWith: Error | undefined
+  /**
+   * What each worktree is checked out at. Exposed rather than private because
+   * a suite that did not cut the worktree through this same fake still has to
+   * be able to say what Handella would find there.
+   */
+  readonly heads: Map<string, string>
   readonly removed: string[]
 }
 
@@ -35,7 +41,7 @@ export function createFakeGitAdapter(
   const added: AddWorktreeInput[] = []
   const fetched: { base: string; repositoryPath: string }[] = []
   const removed: string[] = []
-  const headBranches = new Map<string, string>()
+  const heads = new Map<string, string>()
 
   // One armed failure, spent by whichever call reaches it first.
   const consume = (): void => {
@@ -49,6 +55,7 @@ export function createFakeGitAdapter(
   const fake: FakeGitAdapter = {
     added,
     existingBranches: new Set(options.existingBranches ?? []),
+    heads,
     failNextWith: undefined,
     fetched,
     removed,
@@ -67,7 +74,7 @@ export function createFakeGitAdapter(
       consume()
       added.push(input)
       fake.existingBranches.add(input.branch)
-      headBranches.set(input.worktreePath, input.branch)
+      heads.set(input.worktreePath, input.branch)
       if (options.createsDirectories !== false) {
         mkdirSync(input.worktreePath, { recursive: true })
       }
@@ -76,12 +83,12 @@ export function createFakeGitAdapter(
     async removeWorktree(_repositoryPath, worktreePath) {
       consume()
       removed.push(worktreePath)
-      headBranches.delete(worktreePath)
+      heads.delete(worktreePath)
     },
 
     async headBranch(worktreePath) {
       consume()
-      return headBranches.get(worktreePath) ?? 'dev'
+      return heads.get(worktreePath) ?? 'dev'
     },
 
     async listRemoteBranches() {

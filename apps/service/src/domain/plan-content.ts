@@ -2,6 +2,7 @@ import { PlanContentSchema, type PlanContent } from '@handella/contracts'
 import { Compile } from 'typebox/compile'
 
 import { planContentInvalid } from './errors.js'
+import { schemaComplaint } from './schema-complaint.js'
 
 /**
  * Compiled once at load rather than interpreted per call. Every plan read out
@@ -22,15 +23,12 @@ export function assertPlanContent(
 ): asserts value is PlanContent {
   if (planContent.Check(value)) return
 
-  // The first failure only: a plan of the wrong shape usually fails in every
-  // field at once, and the whole list says no more than one line of it.
-  const first = planContent.Errors(value)[0]
   throw planContentInvalid(
-    first === undefined
-      ? 'A plan does not match the plan schema'
-      : `A plan does not match the plan schema: ${first.message} at ${
-          first.instancePath === '' ? '/' : first.instancePath
-        }`,
+    schemaComplaint(
+      planContent,
+      value,
+      'A plan does not match the plan schema',
+    ),
   )
 }
 

@@ -116,6 +116,20 @@ the plan it revises, rather than a fresh briefing, and Phase 6 implements in
 the session that planned.
 _Avoid_: Thread, run, context
 
+**Attempt**:
+One turn of implementation Codex takes on a Job: the first, or one of at most
+two autonomous repairs after it. The bound is on what Handella does unsupervised
+— a Handler who resumes a stopped Job grants a fresh three, because they have
+looked at it and said to go on.
+_Avoid_: Run, retry, pass
+
+**Milestone**:
+Something the agent did that the Handler can read at a glance: a command and how
+it ended, files changed, its own narration of the work. Not what it thought —
+reasoning is kept with the rest of the turn's output and read only by someone
+who goes looking.
+_Avoid_: Event, log line, step
+
 **Review Round**:
 One pass of review comments on a Job's pull request, together with Handella's
 verdicts and any child pull request that answers them.

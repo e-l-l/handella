@@ -49,6 +49,17 @@ procedure for doing it.
 - Commit in logical pieces with messages that explain why, not what.
 - Do not amend or rebase commits that are already pushed.
 
+## Opening the pull request
+
+- Push this branch and open the pull request with the \`/create-pr\` skill.
+  Without that skill, push and run \`gh pr create\` yourself.
+- Open it ready for review, not as a draft, and target the base branch this
+  worktree was cut from.
+- Write the description from the diff you actually produced: what changed, why,
+  and how a reviewer can check it. Reference the Linear issue.
+- Open exactly one pull request. If one already exists for this branch, push to
+  it rather than opening another.
+
 ## Never
 
 - Never merge a pull request.

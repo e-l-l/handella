@@ -5,11 +5,56 @@ import { parse } from 'dotenv'
 
 import { repositoryRoot } from './paths.js'
 
+/**
+ * The keys whose values are secrets rather than settings. Kept apart from the
+ * rest of the allowlist because it is what `secretValues` is built from: a key
+ * added to Handella without being named here is a secret that will be written
+ * into a log unredacted, and the split is the only place that can be noticed.
+ */
+const secretEnvironmentKeys = new Set(['HANDELLA_LINEAR_API_KEY'])
+
 const allowedEnvironmentKeys = new Set([
   'HANDELLA_DATABASE_PATH',
-  'HANDELLA_LINEAR_API_KEY',
   'HANDELLA_PORT',
+  ...secretEnvironmentKeys,
 ])
+
+/**
+ * The `_`-delimited words that make an inherited variable a credential.
+ *
+ * Handella's own settings are named exactly above; this is about the
+ * environment Handella does not own but hands on. The implementation sandbox
+ * runs with the Handler's whole environment and reaches the network (ADR 0010),
+ * so an agent that prints its environment — or a tool that prints it inside an
+ * error — would write those values into a log the dashboard serves.
+ *
+ * Matched on the key rather than on the value's shape, for the reason
+ * `redact.ts` gives for not matching patterns at all: a name says a value is
+ * secret, a shape only suggests it. A false positive costs one ordinary value
+ * being hidden; a false negative costs a credential in a log.
+ */
+const credentialWords = new Set([
+  'APIKEY',
+  'CREDENTIAL',
+  'CREDENTIALS',
+  'PASSWD',
+  'PASSWORD',
+  'SECRET',
+  'TOKEN',
+])
+
+const namesACredential = (key: string): boolean =>
+  key
+    .toUpperCase()
+    .split('_')
+    .some((word) => credentialWords.has(word) || word.endsWith('KEY'))
+
+/**
+ * Below this, a value is left alone. A secret short enough to collide with
+ * ordinary text would redact that text everywhere it appeared, which hides
+ * more than it protects.
+ */
+const shortestRedactableSecret = 8
 
 export interface AppConfig {
   databasePath: string
@@ -17,8 +62,23 @@ export interface AppConfig {
   host: '127.0.0.1'
   /** Absent when the Handler has not set one. Intake is then unavailable, but Handella still starts. */
   linearApiKey: string | undefined
+  /**
+   * Where an Attempt's raw Codex stream is kept, beside the database and the
+   * worktrees and not configurable for the same reason as `worktreeRoot`.
+   */
+  logRoot: string
   port: number
   repositoryRoot: string
+  /**
+   * Every secret's actual value, for the redactor that persisted output passes
+   * through. Values rather than keys, because what has to be kept out of a log
+   * is the secret itself wherever it turns up — in a command Codex ran, in an
+   * error a tool printed — and not only where it is named.
+   *
+   * Handella's own settings and the credentials it inherits, because the
+   * sandbox is handed both and a log cannot tell them apart.
+   */
+  secretValues: readonly string[]
   /**
    * Where Dispatch cuts worktrees. Beside the database rather than inside the
    * target checkout, and deliberately not configurable — see
@@ -109,13 +169,30 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     ? configuredDatabasePath
     : resolve(rootDirectory, configuredDatabasePath)
 
+  // Handella's own secrets and every credential in the environment the
+  // implementation pass inherits. `createRedactor` dedupes and orders these.
+  const secretValues = [
+    ...new Set(
+      [
+        ...[...secretEnvironmentKeys].map((key) => valueFor(key)),
+        ...Object.entries(environment)
+          .filter(([key]) => namesACredential(key))
+          .map(([, value]) => value),
+      ]
+        .map((value) => value?.trim() ?? '')
+        .filter((value) => value.length >= shortestRedactableSecret),
+    ),
+  ]
+
   return {
     databasePath,
     dashboardPath: join(rootDirectory, 'apps/dashboard/dist'),
     host: '127.0.0.1',
     linearApiKey: parseLinearApiKey(valueFor('HANDELLA_LINEAR_API_KEY')),
     port: parsePort(valueFor('HANDELLA_PORT')),
+    logRoot: join(dirname(databasePath), 'logs'),
     repositoryRoot: rootDirectory,
+    secretValues,
     worktreeRoot: join(dirname(databasePath), 'worktrees'),
   }
 }

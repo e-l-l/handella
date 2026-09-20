@@ -8,6 +8,7 @@ import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 import type { CodexAdapter } from './adapters/codex.js'
 import type { FolderPicker } from './adapters/folders.js'
 import type { GitAdapter } from './adapters/git.js'
+import type { GitHubAdapter } from './adapters/github.js'
 import type { LinearAdapter } from './adapters/linear.js'
 import type { StatusSource } from './database/database.js'
 import { crossOriginRefused, DomainError } from './domain/errors.js'
@@ -29,6 +30,7 @@ interface BuildAppOptions {
   dispatcher: Dispatcher
   folders: FolderPicker
   git: GitAdapter
+  github: GitHubAdapter
   linear: LinearAdapter
   logger?: FastifyServerOptions['logger']
   startedAt?: Date
@@ -109,6 +111,7 @@ export async function buildApp(options: BuildAppOptions) {
 
   await app.register(statusRoutes, {
     codex: options.codex,
+    github: options.github,
     linear: options.linear,
     startedAt,
     statusSource: options.statusSource,

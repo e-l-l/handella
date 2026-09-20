@@ -6,6 +6,9 @@ import { createScheduler } from '../src/domain/scheduler.js'
 import type { TestContext } from './helpers.js'
 import {
   aDispatchedQueue,
+  aTemporaryDirectory,
+  createFakeGitAdapter,
+  createFakeGitHubAdapter,
   aFailingCodex,
   aHeldCodex,
   aLinearIssueLink,
@@ -26,7 +29,10 @@ const aScheduler = (
   createScheduler({
     broadcaster: context.broadcaster,
     codex,
+    git: createFakeGitAdapter(),
+    github: createFakeGitHubAdapter(),
     linear: context.linear,
+    logRoot: aTemporaryDirectory('handella-logs-'),
     store: context.store,
   })
 

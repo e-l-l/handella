@@ -13,5 +13,6 @@ export {
   isQueued,
   isRunning,
   maxConcurrency,
+  maxImplementationAttempts,
   orderQueue,
 } from '@handella/contracts'

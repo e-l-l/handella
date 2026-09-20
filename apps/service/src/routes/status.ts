@@ -7,11 +7,13 @@ import {
 import type { FastifyPluginCallback } from 'fastify'
 
 import type { CodexAdapter } from '../adapters/codex.js'
+import type { GitHubAdapter } from '../adapters/github.js'
 import type { LinearAdapter } from '../adapters/linear.js'
 import type { StatusSource } from '../database/database.js'
 
 interface StatusRouteOptions {
   codex: CodexAdapter
+  github: GitHubAdapter
   linear: LinearAdapter
   startedAt: Date
   statusSource: StatusSource
@@ -52,6 +54,7 @@ export const statusRoutes: FastifyPluginCallback<StatusRouteOptions> = (
           integrations: {
             linear: { configured: options.linear.configured },
             codex: { configured: options.codex.configured },
+            github: { configured: options.github.configured },
           },
           database: {
             status: 'ok',

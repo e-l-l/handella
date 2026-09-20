@@ -65,4 +65,4 @@ npm run db:generate --workspace @handella/service
 
 ## Local data
 
-Handella stores its SQLite database in the ignored `.data` directory by default. To reset this installation during early development, stop Handella and move `.data` somewhere safe; the next startup creates a new installation identity. Do not remove `.data` if its local history is still needed.
+Handella stores its SQLite database, its worktrees and each implementation turn's raw Codex log in the ignored `.data` directory by default. To reset this installation during early development, stop Handella and move `.data` somewhere safe; the next startup creates a new installation identity. Do not remove `.data` if its local history is still needed.

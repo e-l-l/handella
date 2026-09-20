@@ -7,12 +7,15 @@ import { attentionKeys, resolveAttentionItem } from '../api/attention.ts'
 import { Chip, Dot, type Tone } from '../components/Chip.tsx'
 import { SkeletonList } from '../components/Skeleton.tsx'
 import { WorkClassChip } from '../components/WorkClassChip.tsx'
+import { useAttempts, useMilestones } from '../hooks/useAttempts.ts'
 import { useAttentionItems } from '../hooks/useAttentionItems.ts'
 import { useJobs } from '../hooks/useJobs.ts'
 import { isQueued, isRunning, maxConcurrency, orderQueue } from '../jobViews.ts'
 import {
+  attemptLabel,
   attentionKindLabels,
   formatAge,
+  formatDuration,
   issueKeyLabel,
   stateLabels,
   workClassLabels,
@@ -201,6 +204,42 @@ function AttentionCard({
   )
 }
 
+/**
+ * What a running job is doing, read from its own milestones.
+ *
+ * Only an implementing job has any: planning produces no spine, and a job that
+ * has just been given a slot has not written its first line yet.
+ */
+function LatestBeat({ job }: { job: Job }) {
+  const implementing = job.state === 'implementing'
+  const attempts = useAttempts(job.id, implementing)
+  const milestones = useMilestones(job.id, implementing)
+
+  if (!implementing) return null
+
+  const attempt = attempts.data?.at(-1)
+  const latest = milestones.data?.at(-1)
+  if (attempt === undefined) return null
+
+  return (
+    <>
+      <span className="font-mono text-[11px] text-ink-5">
+        {attemptLabel(attempt)} ·{' '}
+        {formatDuration(attempt.startedAt, attempt.endedAt)}
+      </span>
+      {/* The line the agent just wrote, which is what actually tells the
+          Handler whether to step in. Still no bar: milestones have no total,
+          so a bar would be inventing the denominator. */}
+      {latest === undefined ? null : (
+        <span className="truncate font-mono text-[11.5px] text-ink-3">
+          {latest.summary}
+          {latest.exitCode === null ? '' : ` · exit ${latest.exitCode}`}
+        </span>
+      )}
+    </>
+  )
+}
+
 /** One running job: what it is doing now, and for how long it has been doing it. */
 function RunningSlot({ job }: { job: Job }) {
   return (
@@ -223,8 +262,7 @@ function RunningSlot({ job }: { job: Job }) {
         <span className="text-[12.5px] text-ink-3">
           {stateLabels[job.state]} · base {job.baseBranch}
         </span>
-        {/* No progress bar until Phase 6 streams milestones: a bar with nothing
-            behind it would be a number Handella cannot stand behind. */}
+        <LatestBeat job={job} />
         <span className="flex justify-between font-mono text-[11px] text-ink-5">
           <span>{workClassLabels[job.workClass]}</span>
           <span>{formatAge(job.updatedAt)}</span>

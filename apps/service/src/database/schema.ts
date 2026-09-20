@@ -1,8 +1,10 @@
 import {
+  attemptOutcomes,
   attentionItemKinds,
   jobSources,
   jobStates,
   jobSuspensions,
+  milestoneKinds,
   planApprovalStates,
   settledJobStates,
   transitionActors,
@@ -290,6 +292,103 @@ export const runbookSnapshots = sqliteTable(
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   },
   (table) => [index('runbook_snapshots_job_id_idx').on(table.jobId)],
+)
+
+/**
+ * One turn of implementation Codex took on a Job.
+ *
+ * Rows are how the bound on autonomous repair is counted: the next turn runs
+ * only while there are fewer than three since the Handler last resumed the Job.
+ * A counter column would record the number without recording what any of the
+ * turns did, and an `implementing -> implementing` edge would put repair
+ * mechanics into the table ADR 0003 keeps as a statement about a Job's life.
+ * Rows carry both, and the milestones and the log hang off them.
+ *
+ * `outcome` and `ended_at` are null exactly while the turn is still running, so
+ * a row with a null `ended_at` after a restart is a turn that was interrupted.
+ *
+ * A round is what makes the budget resettable without a column on the job: a
+ * turn joins the open round while that round has turns left and its last one
+ * ended in a way Handella may answer by itself, and otherwise opens a new one —
+ * which only a Handler resume can reach.
+ */
+export const implementationAttempts = sqliteTable(
+  'implementation_attempts',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    round: integer('round').notNull(),
+    attempt: integer('attempt').notNull(),
+    codexSessionId: text('codex_session_id').notNull(),
+    startedAt: integer('started_at', { mode: 'timestamp_ms' }).notNull(),
+    endedAt: integer('ended_at', { mode: 'timestamp_ms' }),
+    outcome: text('outcome', { enum: attemptOutcomes }),
+    /** The completion report as JSON, already redacted, or null. */
+    report: text('report'),
+    failureReason: text('failure_reason'),
+    /**
+     * Where this turn's raw stream was written. A path rather than the bytes:
+     * a long turn is megabytes of JSONL, which is the wrong shape for a row and
+     * for the write-ahead log behind it. Phase 12 deletes the file and keeps
+     * this row as the metadata that says a turn happened.
+     */
+    logPath: text('log_path').notNull(),
+  },
+  (table) => [
+    check('implementation_attempts_attempt_check', sql`${table.attempt} >= 1`),
+    check('implementation_attempts_round_check', sql`${table.round} >= 1`),
+    check(
+      'implementation_attempts_outcome_check',
+      nullOrOneOf(table.outcome, attemptOutcomes),
+    ),
+    uniqueIndex('implementation_attempts_job_id_round_attempt_unique').on(
+      table.jobId,
+      table.round,
+      table.attempt,
+    ),
+  ],
+)
+
+/**
+ * One readable beat of an Attempt. The rest of Codex's stream — its reasoning,
+ * its partial updates — is in the log file and nowhere else, which is what
+ * keeps this a spine rather than a second copy of the log.
+ *
+ * `seq` orders within the Attempt rather than by clock, because two events in
+ * the same millisecond still happened in an order and a Handler reading a
+ * failed turn needs it.
+ */
+export const milestones = sqliteTable(
+  'milestones',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    attemptId: text('attempt_id')
+      .notNull()
+      .references(() => implementationAttempts.id, { onDelete: 'cascade' }),
+    seq: integer('seq').notNull(),
+    kind: text('kind', { enum: milestoneKinds }).notNull(),
+    summary: text('summary').notNull(),
+    detail: text('detail'),
+    exitCode: integer('exit_code'),
+    occurredAt: integer('occurred_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    check('milestones_kind_check', oneOf(table.kind, milestoneKinds)),
+    check('milestones_seq_check', sql`${table.seq} >= 0`),
+    uniqueIndex('milestones_attempt_id_seq_unique').on(
+      table.attemptId,
+      table.seq,
+    ),
+    index('milestones_job_id_occurred_at_idx').on(
+      table.jobId,
+      table.occurredAt,
+    ),
+  ],
 )
 
 /**

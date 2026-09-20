@@ -1,39 +1,11 @@
-import { execFile } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
-import { promisify } from 'node:util'
 
 import { gitUnavailable, worktreeCreationFailed } from '../domain/errors.js'
-import { isMissingCommand, stderrOf } from './command.js'
+import { cliRunner, commandEnv } from './command.js'
 import type { AddWorktreeInput, GitAdapter } from './git.js'
 
-const run = promisify(execFile)
-
-// Git's own text is the only thing that makes a failure diagnosable, and a
-// localised message is not something error mapping can read. Built once: it is
-// a full copy of the environment and it is identical on every invocation.
-const gitEnv = { ...process.env, LC_ALL: 'C' }
-
-/**
- * `execFile` with an argv array and no shell. Branch names come from Linear and
- * paths from the Handler, and neither may ever reach a command string.
- */
-const git = async (
-  cwd: string,
-  args: readonly string[],
-): Promise<{ stdout: string }> => {
-  try {
-    return await run('git', [...args], { cwd, env: gitEnv })
-  } catch (error) {
-    if (isMissingCommand(error)) {
-      throw gitUnavailable('git is not installed or is not on PATH', error)
-    }
-    throw gitUnavailable(
-      `git ${args[0] ?? ''} failed in ${cwd}`.trim(),
-      new Error(stderrOf(error) || String(error), { cause: error }),
-    )
-  }
-}
+const git = cliRunner('git', gitUnavailable, commandEnv())
 
 export const createGitAdapter = (): GitAdapter => ({
   async fetchBase(repositoryPath, base) {

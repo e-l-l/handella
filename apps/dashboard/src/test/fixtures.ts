@@ -1,5 +1,7 @@
 import type {
+  Attempt,
   Job,
+  Milestone,
   PlanVersion,
   Repository,
   RunbookVersion,
@@ -27,6 +29,7 @@ export const aStatus = (
   integrations: {
     linear: { configured: true },
     codex: { configured: true },
+    github: { configured: true },
   },
   database: { status: 'ok', journalMode: 'wal' },
   ...overrides,
@@ -51,6 +54,33 @@ export const aJob = (overrides: Partial<Job> = {}): Job => ({
   originalPrUrl: null,
   createdAt: '2026-09-18T10:00:00.000Z',
   updatedAt: '2026-09-18T10:00:00.000Z',
+  ...overrides,
+})
+
+export const anAttempt = (overrides: Partial<Attempt> = {}): Attempt => ({
+  id: 'aaaaaaaa-e89b-42d3-a456-426614174000',
+  jobId: '123e4567-e89b-42d3-a456-426614174000',
+  round: 1,
+  attempt: 1,
+  codexSessionId: 'session-1',
+  startedAt: '2026-09-18T10:05:00.000Z',
+  endedAt: null,
+  outcome: null,
+  report: null,
+  failureReason: null,
+  ...overrides,
+})
+
+export const aMilestone = (overrides: Partial<Milestone> = {}): Milestone => ({
+  id: 'bbbbbbbb-e89b-42d3-a456-426614174000',
+  jobId: '123e4567-e89b-42d3-a456-426614174000',
+  attemptId: 'aaaaaaaa-e89b-42d3-a456-426614174000',
+  seq: 0,
+  kind: 'command',
+  summary: 'npm test',
+  detail: null,
+  exitCode: 0,
+  occurredAt: '2026-09-18T10:06:00.000Z',
   ...overrides,
 })
 

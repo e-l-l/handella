@@ -1,4 +1,13 @@
-import type { Job, LinearIssueSummary, PlanContent } from '@handella/contracts'
+import type {
+  AttemptOutcome,
+  ImplementationReport,
+  Job,
+  LinearIssueSummary,
+  MilestoneKind,
+  PlanContent,
+} from '@handella/contracts'
+
+import type { Redactor } from '../domain/redact.js'
 
 export interface PlanningRequest {
   /**
@@ -37,9 +46,77 @@ export interface PlanningResult {
   sessionId: string
 }
 
-/** The read-only planning pass, and the only thing Handella asks Codex to do. */
+/**
+ * A beat of an Attempt on its way to the spine, before it is a row: the store
+ * supplies the ids, the sequence and the clock.
+ */
+export interface MilestoneInput {
+  detail: string | null
+  exitCode: number | null
+  kind: MilestoneKind
+  summary: string
+}
+
+export interface ImplementationRequest {
+  /** Which turn of this round, 1 for the first and 2 or 3 for a repair. */
+  attempt: number
+  /** Which run of the budget. Above 1 only after the Handler resumed the job. */
+  round: number
+  issue: LinearIssueSummary
+  job: Job
+  /**
+   * Every line Codex wrote, already redacted, in the order it wrote it. The
+   * caller appends these to the Attempt's log; the adapter keeps no file.
+   */
+  onLine(text: string): void
+  /** The readable subset of that stream, as it happens rather than at the end. */
+  onMilestone(milestone: MilestoneInput): void
+  /** The plan the Handler approved, quoted into the first turn's brief. */
+  plan: PlanContent
+  /** The Runbook Snapshot's text — what this job approved against, not today's. */
+  runbook: string
+  /** Always set: implementation happens in the session that planned. */
+  sessionId: string
+  signal: AbortSignal
+  /**
+   * What the previous turn left broken, and the whole of a repair turn's brief.
+   * Empty on the first attempt.
+   */
+  unresolved: readonly string[]
+  /** Codex writes here, and nowhere else. */
+  worktreePath: string
+}
+
+/**
+ * How the turn ended, in the Attempt's own vocabulary.
+ *
+ * `implement` resolves for every ending a turn can reach, including the ones
+ * that went badly, because each is something the scheduler does a different
+ * thing about. It rejects only when Codex could not be run at all, which is not
+ * an ending but an absence.
+ *
+ * `interrupted` is excluded: only a restart can decide a turn was interrupted,
+ * and by then nothing is here to say so.
+ */
+export interface ImplementationResult {
+  failureReason: string | null
+  outcome: Exclude<AttemptOutcome, 'interrupted'>
+  report: ImplementationReport | null
+}
+
+/** The two passes Handella asks Codex to take, and nothing else. */
 export interface CodexAdapter {
   /** Whether a real Codex is behind this, so status can say so. */
   readonly configured: boolean
+  implement(input: ImplementationRequest): Promise<ImplementationResult>
   plan(input: PlanningRequest): Promise<PlanningResult>
+}
+
+export interface CodexAdapterOptions {
+  /**
+   * Applied to every line and every message this adapter produces. Injected
+   * here rather than called by each consumer, so there is one place redaction
+   * can be forgotten and it is this one.
+   */
+  redact: Redactor
 }

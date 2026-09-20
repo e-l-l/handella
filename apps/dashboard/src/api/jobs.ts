@@ -1,20 +1,32 @@
 import type {
+  Attempt,
   CreateJob,
   Job,
   JobState,
   JobSuspension,
   JobTransitionRecord,
+  Milestone,
   PlanVersion,
 } from '@handella/contracts'
 
 import { useQueryClient } from '@tanstack/react-query'
 
 import { attentionKeys } from './attention.ts'
-import { request } from './client.ts'
+import { request, requestText } from './client.ts'
 
 export const jobKeys = {
   all: ['jobs'] as const,
+  attemptLog: (jobId: string, attemptId: string) =>
+    ['jobs', jobId, 'attempts', attemptId, 'log'] as const,
+  attempts: (jobId: string) => ['jobs', jobId, 'attempts'] as const,
   detail: (jobId: string) => ['jobs', jobId] as const,
+  /**
+   * Every attempt's milestones under one key. A running job invalidates this
+   * once a second, so it is deliberately the narrowest thing that changes that
+   * often — narrower than `jobKeys.all`, which would refetch the job list for a
+   * job nobody is looking at.
+   */
+  milestones: (jobId: string) => ['jobs', jobId, 'milestones'] as const,
   planVersions: (jobId: string) => ['jobs', jobId, 'plan-versions'] as const,
   transitions: (jobId: string) => ['jobs', jobId, 'transitions'] as const,
 }
@@ -47,6 +59,21 @@ export const fetchJobTransitions = async (
 export const fetchPlanVersions = async (
   jobId: string,
 ): Promise<PlanVersion[]> => request(`/api/jobs/${jobId}/plan-versions`)
+
+export const fetchAttempts = async (jobId: string): Promise<Attempt[]> =>
+  request(`/api/jobs/${jobId}/attempts`)
+
+export const fetchMilestones = async (jobId: string): Promise<Milestone[]> =>
+  request(`/api/jobs/${jobId}/milestones`)
+
+export const fetchAttemptLog = async (
+  jobId: string,
+  attemptId: string,
+  options: { full?: boolean } = {},
+): Promise<{ text: string; truncated: boolean }> =>
+  requestText(
+    `/api/jobs/${jobId}/attempts/${attemptId}/log${options.full === true ? '?full=true' : ''}`,
+  )
 
 export const createJob = async (body: CreateJob): Promise<Job> =>
   request('/api/jobs', { body, method: 'POST' })

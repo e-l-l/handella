@@ -1,75 +1,106 @@
 import { spawn } from 'node:child_process'
-import {
-  accessSync,
-  constants,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
-import { PlanContentSchema, planningTimeoutMs } from '@handella/contracts'
+import {
+  ImplementationReportSchema,
+  PlanContentSchema,
+  codexIdleMs,
+  implementationTimeoutMs,
+  planningTimeoutMs,
+} from '@handella/contracts'
 
 import { codexPlanningFailed, codexUnavailable } from '../domain/errors.js'
+import { DomainError } from '../domain/errors.js'
+import { parseImplementationReport } from '../domain/implementation-report.js'
 import { parsePlanContent } from '../domain/plan-content.js'
-import type { CodexAdapter, PlanningRequest, PlanningResult } from './codex.js'
+import type { Redactor } from '../domain/redact.js'
+import { commandEnv, onPath } from './command.js'
+import type {
+  CodexAdapter,
+  CodexAdapterOptions,
+  ImplementationRequest,
+  ImplementationResult,
+  MilestoneInput,
+  PlanningRequest,
+  PlanningResult,
+} from './codex.js'
 
 const binary = 'codex'
 
 /** How long a stopped pass is given to exit before it is killed outright. */
 const graceMs = 5_000
 
+/** A milestone is a line in a list, so its summary is one line and a short one. */
+const longestSummary = 200
+
 /**
- * The overrides that make an unattended pass safe, applied on every
- * invocation. `codex exec resume` accepts no `--sandbox` and no `--cd`, only
- * `-c`, so the sandbox is set this way rather than by flag on both paths: one
- * spelling, and no chance of a revision running under weaker isolation than
- * the pass it revises.
- *
- * - `sandbox_mode`: the Handler's own config is `workspace-write`. Planning
- *   reads; a planner that can write has already started implementing.
- * - `approval_policy`: their config is `on-request`, and there is nobody here
- *   to ask. Never, so a command that needs approval fails rather than hangs.
- * - `notify`: their config fires a desktop notifier when a turn ends. Handella
- *   runs turns on its own schedule, and three jobs would mean three pop-ups
- *   for work the Handler did not just do.
+ * How much of a command's output a milestone keeps. A fresh worktree's `npm
+ * install` alone is tens of kilobytes, and the milestone list is re-served in
+ * full every time a running job announces progress — about once a second. The
+ * whole of it is in the Attempt's raw log, which has an endpoint of its own.
  */
-const safetyOverrides: readonly string[] = [
-  '-c',
-  'sandbox_mode="read-only"',
+const longestDetail = 4_000
+
+const tailOf = (text: string): string =>
+  text.length <= longestDetail ? text : `…${text.slice(-longestDetail)}`
+
+/**
+ * The overrides every pass runs under, applied by `-c` rather than by flag
+ * because `codex exec resume` accepts no `--sandbox` and no `--cd`. One
+ * spelling on both paths, and no chance of a resumed turn running under weaker
+ * isolation than the one it continues.
+ *
+ * - `approval_policy`: the Handler's config is `on-request`, and there is
+ *   nobody here to ask. Never, so a command that needs approval fails rather
+ *   than hangs.
+ * - `notify`: their config fires a desktop notifier when a turn ends. Handella
+ *   runs turns on its own schedule, and three jobs would mean three pop-ups for
+ *   work the Handler did not just do.
+ */
+const sharedOverrides: readonly string[] = [
   '-c',
   'approval_policy="never"',
   '-c',
   'notify=[]',
 ]
 
-/**
- * Whether the binary is there, asked the way a shell asks. Codex is a local
- * binary rather than a credential, so there is no key to check and nothing to
- * be unconfigured about beyond it not being installed.
- */
-const onPath = (name: string): boolean => {
-  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
-    if (directory === '') continue
-    try {
-      accessSync(join(directory, name), constants.X_OK)
-      return true
-    } catch {
-      // Not here; the next entry is not an error either.
-    }
-  }
-  return false
-}
+/** Planning reads. A planner that can write has already started implementing. */
+const planningOverrides: readonly string[] = [
+  '-c',
+  'sandbox_mode="read-only"',
+  ...sharedOverrides,
+]
 
-const describeIssue = (input: PlanningRequest): string =>
+/**
+ * Implementation writes, and reaches the network.
+ *
+ * A worktree is a fresh checkout holding no dependencies, so the runbook's
+ * "run the repository's test suite" step has to install them before it can run
+ * anything — and once the network is open the agent can also push and open its
+ * own pull request, which is a better one than Handella could write from
+ * outside the diff. What that costs, and how Handella verifies the result
+ * rather than trusting it, is docs/adr/0010-network-in-the-implementation-sandbox.md.
+ *
+ * `workspace-write` still confines writes to the cwd, which is the worktree.
+ * `danger-full-access` is never used.
+ */
+const implementationOverrides: readonly string[] = [
+  '-c',
+  'sandbox_mode="workspace-write"',
+  '-c',
+  'sandbox_workspace_write.network_access=true',
+  ...sharedOverrides,
+]
+
+const describeIssue = (issue: PlanningRequest['issue']): string =>
   [
-    `Issue: ${input.issue.identifier} — ${input.issue.title}`,
-    `Linear: ${input.issue.url}`,
+    `Issue: ${issue.identifier} — ${issue.title}`,
+    `Linear: ${issue.url}`,
     '',
-    input.issue.description ?? '(The issue has no description.)',
+    issue.description ?? '(The issue has no description.)',
   ].join('\n')
 
 /**
@@ -96,7 +127,7 @@ const planningPrompt = (input: PlanningRequest): string => {
     'You are running read-only and cannot write, so investigate as much as you',
     'need to and propose the work rather than starting it.',
     '',
-    describeIssue(input),
+    describeIssue(input.issue),
     '',
     'The plan you produce will be implemented by another agent following this',
     'runbook. Plan the work itself; do not restate the procedure below.',
@@ -117,39 +148,232 @@ const planningPrompt = (input: PlanningRequest): string => {
   ].join('\n')
 }
 
-// Built once for the reason `git-cli.ts` builds its own once: a full copy of
-// the environment, identical on every invocation. `LC_ALL` so a failure's text
-// is the text the error mapping was written against.
-const codexEnv = { ...process.env, LC_ALL: 'C' }
+const describePlan = (plan: ImplementationRequest['plan']): string =>
+  [
+    plan.summary,
+    '',
+    ...plan.steps.map(
+      (step, index) =>
+        `${index + 1}. ${step.title}${step.required ? '' : ' (optional)'}\n   ${step.detail}`,
+    ),
+    '',
+    'Verification:',
+    ...plan.verification.map((line) => `- ${line}`),
+    '',
+    'Out of scope:',
+    ...plan.outOfScope.map((line) => `- ${line}`),
+  ].join('\n')
 
 /**
- * One `codex exec` invocation, read as it goes, resolving with the session it
- * ran in. `spawn` with a line reader rather than `execFile` like the git
- * adapter, because `--json` emits an event per reasoning step and a buffered
- * read would truncate a long pass at `maxBuffer` — and Phase 6 needs this
- * stream live in any case.
+ * The first turn carries the whole brief. A repair turn carries almost nothing,
+ * for the reason a plan revision does: it resumes the session that already
+ * holds the plan and the runbook, and restating them invites the agent to start
+ * the work again rather than finish it.
+ *
+ * Neither turn is told how much budget is left. An agent told it is on its last
+ * attempt takes shortcuts — disables a test, skips a check — which is the
+ * opposite of what a repair turn is for.
  */
-const runPass = (
-  args: readonly string[],
-  prompt: string,
-  input: PlanningRequest,
-): Promise<string> =>
-  new Promise<string>((resolve, reject) => {
-    const child = spawn(binary, args, {
-      cwd: input.worktreePath,
+const implementationPrompt = (input: ImplementationRequest): string => {
+  if (input.attempt > 1 || input.round > 1) {
+    return [
+      'The previous turn did not finish.',
+      '',
+      ...(input.unresolved.length > 0
+        ? [
+            'Still unresolved:',
+            '',
+            ...input.unresolved.map((item) => `- ${item}`),
+            '',
+          ]
+        : []),
+      'This worktree may hold partial, uncommitted work from that turn. Read',
+      '`git status` and the diff before you continue, rather than starting over.',
+      '',
+      'Finish the work, then complete the remaining steps of the runbook,',
+      'including opening the pull request. Reply with JSON matching the schema',
+      'you were given, and nothing else.',
+    ].join('\n')
+  }
+
+  return [
+    'The Handler approved this plan. Implement it.',
+    '',
+    describeIssue(input.issue),
+    '',
+    '--- approved plan ---',
+    describePlan(input.plan),
+    '--- end approved plan ---',
+    '',
+    'Carry it out by following this runbook exactly. The plan is the work; the',
+    'runbook is how work is done here, and it is the version this job approved',
+    'against rather than whatever it says today.',
+    '',
+    '--- runbook ---',
+    input.runbook,
+    '--- end runbook ---',
+    '',
+    `You are on the branch ${input.job.canonicalBranch ?? '(unknown)'}, cut from`,
+    `${input.job.baseBranch}. Stay on it. The pull request targets ${input.job.baseBranch}`,
+    'and is opened ready for review, not as a draft.',
+    '',
+    'Reply with JSON matching the schema you were given, and nothing else.',
+  ].join('\n')
+}
+
+const oneLine = (text: string): string => {
+  const first = text.trim().split('\n')[0] ?? ''
+  return first.length > longestSummary
+    ? `${first.slice(0, longestSummary - 1)}…`
+    : first
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === 'object' && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined
+
+const stringOr = (value: unknown, fallback: string): string =>
+  typeof value === 'string' ? value : fallback
+
+/** The records in a list Codex sent, skipping whatever in it was not one. */
+const records = (value: unknown): Record<string, unknown>[] =>
+  (Array.isArray(value) ? value : [])
+    .map((entry) => asRecord(entry))
+    .filter((entry) => entry !== undefined)
+
+/**
+ * The readable subset of a thread item, or nothing.
+ *
+ * Reasoning, partial updates, web searches and tool calls all return undefined:
+ * they are the log's, not the spine's. An item whose shape is not what this
+ * expects also returns undefined rather than a half-filled row — Codex owns
+ * this format and is free to add to it.
+ */
+const milestoneFrom = (
+  item: Record<string, unknown>,
+): MilestoneInput | undefined => {
+  switch (item['type']) {
+    case 'agent_message': {
+      const text = stringOr(item['text'], '').trim()
+      if (text === '') return undefined
+      return {
+        detail: text.includes('\n') ? text : null,
+        exitCode: null,
+        kind: 'narration',
+        summary: oneLine(text),
+      }
+    }
+
+    case 'command_execution': {
+      const command = stringOr(item['command'], '').trim()
+      if (command === '') return undefined
+      const output = stringOr(item['aggregated_output'], '').trim()
+      const exitCode = item['exit_code']
+      return {
+        detail: output === '' ? null : tailOf(output),
+        exitCode: typeof exitCode === 'number' ? exitCode : null,
+        kind: 'command',
+        summary: oneLine(command),
+      }
+    }
+
+    case 'file_change': {
+      const described = records(item['changes']).map(
+        (change) =>
+          `${stringOr(change['kind'], 'change')} ${stringOr(change['path'], '?')}`,
+      )
+      if (described.length === 0) return undefined
+      return {
+        detail: described.join('\n'),
+        exitCode: null,
+        kind: 'fileChange',
+        summary: `Changed ${described.length} file${described.length === 1 ? '' : 's'}`,
+      }
+    }
+
+    case 'todo_list': {
+      const entries = records(item['items'])
+      if (entries.length === 0) return undefined
+      const done = entries.filter((entry) => entry['completed'] === true).length
+      return {
+        detail: entries
+          .map(
+            (entry) =>
+              `${entry['completed'] === true ? '[x]' : '[ ]'} ${stringOr(entry['text'], '?')}`,
+          )
+          .join('\n'),
+        exitCode: null,
+        kind: 'todoList',
+        summary: `${done} of ${entries.length} done`,
+      }
+    }
+
+    default:
+      return undefined
+  }
+}
+
+const codexEnv = commandEnv()
+
+interface PassRequest {
+  args: readonly string[]
+  cwd: string
+  /** What the wall clock is called when it fires, for the Handler to read. */
+  label: string
+  onLine?: ((text: string) => void) | undefined
+  onMilestone?: ((milestone: MilestoneInput) => void) | undefined
+  prompt: string
+  redact: Redactor
+  signal: AbortSignal
+  timeoutMs: number
+}
+
+/**
+ * How a pass ended, classified once.
+ *
+ * Planning turns this into a rejection and implementation into an Attempt
+ * outcome, because the same ending means different things to each — but they
+ * were deciding *which* ending it was in the same three steps. Only the saying
+ * differs, so only the saying is left to them.
+ */
+type PassEnding =
+  | { ok: true; sessionId: string | undefined }
+  | {
+      kind: 'failed' | 'stopped' | 'timedOut'
+      ok: false
+      reason: string
+      /** Kept beside the reason for the caller that wants it as a `cause`. */
+      stderr: string
+    }
+
+/**
+ * One `codex exec` invocation, read as it goes. `spawn` with a line reader
+ * rather than `execFile` like the git adapter, because `--json` emits an event
+ * per reasoning step and a buffered read would truncate a long pass at
+ * `maxBuffer` — and implementation needs this stream live in any case.
+ *
+ * Rejects only when Codex could not be run. Every other ending is a resolved
+ * `PassOutcome`: a pass that ran and failed is something its caller has to
+ * describe, not an exception.
+ */
+const runPass = (request: PassRequest): Promise<PassEnding> =>
+  new Promise<PassEnding>((resolve, reject) => {
+    const child = spawn(binary, request.args, {
+      cwd: request.cwd,
       env: codexEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
     let sessionId: string | undefined
     let failure: string | undefined
-    let stopped: string | undefined
+    let stopped: { byClock: boolean; reason: string } | undefined
     let stderr = ''
     let killer: NodeJS.Timeout | undefined
 
-    const stop = (reason: string): void => {
+    const stop = (reason: string, byClock = false): void => {
       if (stopped !== undefined) return
-      stopped = reason
+      stopped = { byClock, reason }
       child.kill('SIGTERM')
       // Codex owns a session file and child processes of its own, so it is
       // asked to stop before it is made to.
@@ -158,31 +382,59 @@ const runPass = (
     }
 
     const timer = setTimeout(
-      () => stop(`Planning ran longer than ${planningTimeoutMs}ms`),
-      planningTimeoutMs,
+      () =>
+        stop(`${request.label} ran longer than ${request.timeoutMs}ms`, true),
+      request.timeoutMs,
     )
     timer.unref()
 
-    const onAbort = (): void => stop('Planning was stopped')
-    input.signal.addEventListener('abort', onAbort, { once: true })
+    // A wall clock only catches a wedged pass once its whole budget is gone.
+    // Silence catches the same pass in minutes, and a pass that is working is
+    // never silent: it reports every command it runs.
+    let idle: NodeJS.Timeout | undefined
+    const resetIdle = (): void => {
+      clearTimeout(idle)
+      idle = setTimeout(
+        () => stop(`${request.label} said nothing for ${codexIdleMs}ms`, true),
+        codexIdleMs,
+      )
+      idle.unref()
+    }
+    resetIdle()
+
+    const onAbort = (): void => stop(`${request.label} was stopped`)
+    request.signal.addEventListener('abort', onAbort, { once: true })
 
     // Everything this pass holds open, let go of in one place. Only ever
     // called from the child's terminal events, by which time `lines` is set.
     const settle = (): void => {
       clearTimeout(timer)
+      clearTimeout(idle)
       clearTimeout(killer)
-      input.signal.removeEventListener('abort', onAbort)
+      request.signal.removeEventListener('abort', onAbort)
       lines.close()
     }
 
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', (chunk: string) => {
+      // A pass that is only complaining is still a pass that is alive.
+      resetIdle()
       // Bounded: a failing pass can be noisy, and only the tail says why.
+      // Kept raw and redacted once at the end rather than per chunk: a secret
+      // split across two reads matches neither half.
       stderr = `${stderr}${chunk}`.slice(-4_000)
     })
 
     const lines = createInterface({ crlfDelay: Infinity, input: child.stdout })
-    lines.on('line', (line) => {
+    lines.on('line', (raw) => {
+      resetIdle()
+
+      // Redacted here and nowhere else. Everything downstream — the log file,
+      // the milestone rows, the failure text on the attempt — reads what this
+      // produced, so a secret has one place it could escape and this is it.
+      const line = request.redact(raw)
+      request.onLine?.(line)
+
       let event: unknown
       try {
         event = JSON.parse(line)
@@ -192,8 +444,8 @@ const runPass = (
         return
       }
 
-      if (typeof event !== 'object' || event === null) return
-      const record = event as Record<string, unknown>
+      const record = asRecord(event)
+      if (record === undefined) return
 
       if (record['type'] === 'thread.started') {
         const id = record['thread_id']
@@ -201,12 +453,17 @@ const runPass = (
         return
       }
 
+      if (record['type'] === 'item.completed') {
+        const item = asRecord(record['item'])
+        if (item === undefined || request.onMilestone === undefined) return
+        const milestone = milestoneFrom(item)
+        if (milestone !== undefined) request.onMilestone(milestone)
+        return
+      }
+
       if (record['type'] === 'turn.failed') {
-        const error = record['error']
-        const message =
-          typeof error === 'object' && error !== null
-            ? (error as Record<string, unknown>)['message']
-            : undefined
+        const error = asRecord(record['error'])
+        const message = error?.['message']
         failure = typeof message === 'string' ? message : 'The turn failed'
         return
       }
@@ -229,44 +486,58 @@ const runPass = (
 
     child.on('close', (code, signal) => {
       settle()
+      const said = request.redact(stderr).trim()
 
       if (stopped !== undefined) {
-        reject(codexPlanningFailed(stopped))
+        resolve({
+          kind: stopped.byClock ? 'timedOut' : 'stopped',
+          ok: false,
+          reason: stopped.reason,
+          stderr: said,
+        })
         return
       }
-
       if (failure !== undefined) {
-        reject(codexPlanningFailed(`Codex could not plan: ${failure}`))
+        resolve({ kind: 'failed', ok: false, reason: failure, stderr: said })
         return
       }
-
       if (code !== 0) {
-        reject(
-          codexPlanningFailed(
-            `codex exec exited with ${signal ?? code}`,
-            new Error(stderr.trim() || 'codex wrote nothing to stderr'),
-          ),
-        )
+        resolve({
+          kind: 'failed',
+          ok: false,
+          reason: `codex exec exited with ${signal ?? code}${
+            said === '' ? '' : `: ${said}`
+          }`,
+          stderr: said,
+        })
         return
       }
 
-      if (sessionId === undefined) {
-        reject(
-          codexPlanningFailed('Codex finished without reporting a session id'),
-        )
-        return
-      }
-
-      resolve(sessionId)
+      resolve({ ok: true, sessionId })
     })
 
     child.stdin.on('error', () => {
       // The child can exit before the prompt is written; `close` reports why.
     })
-    child.stdin.end(prompt)
+    child.stdin.end(request.prompt)
   })
 
-export const createCodexAdapter = (): CodexAdapter => ({
+/** A scratch directory whose files are readable only by this account. */
+const withScratch = async <Result>(
+  prefix: string,
+  body: (directory: string) => Promise<Result>,
+): Promise<Result> => {
+  const directory = mkdtempSync(join(tmpdir(), prefix))
+  try {
+    return await body(directory)
+  } finally {
+    rmSync(directory, { force: true, recursive: true })
+  }
+}
+
+export const createCodexAdapter = (
+  options: CodexAdapterOptions,
+): CodexAdapter => ({
   // Asked each time rather than once at startup: a Handler who installs Codex
   // because the status page told them to should not have to restart Handella
   // to be told they succeeded.
@@ -274,10 +545,89 @@ export const createCodexAdapter = (): CodexAdapter => ({
     return onPath(binary)
   },
 
-  async plan(input: PlanningRequest): Promise<PlanningResult> {
-    const directory = mkdtempSync(join(tmpdir(), 'handella-plan-'))
+  async implement(input: ImplementationRequest): Promise<ImplementationResult> {
+    return withScratch('handella-implement-', async (directory) => {
+      const schemaPath = join(directory, 'report-schema.json')
+      const messagePath = join(directory, 'report.json')
+      writeFileSync(schemaPath, JSON.stringify(ImplementationReportSchema), {
+        mode: 0o600,
+      })
 
-    try {
+      // Always a resume: implementation happens in the session that planned.
+      // `resume` takes no `--cd`, so the cwd is what pins the worktree, and it
+      // is also what `workspace-write` confines writes to.
+      const ending = await runPass({
+        args: [
+          'exec',
+          'resume',
+          input.sessionId,
+          ...implementationOverrides,
+          '--json',
+          '--output-schema',
+          schemaPath,
+          '--output-last-message',
+          messagePath,
+          '-',
+        ],
+        cwd: input.worktreePath,
+        label: 'Implementation',
+        onLine: input.onLine,
+        onMilestone: input.onMilestone,
+        prompt: implementationPrompt(input),
+        redact: options.redact,
+        signal: input.signal,
+        timeoutMs: implementationTimeoutMs,
+      })
+
+      const failed = (
+        reason: string,
+        as: ImplementationResult['outcome'] = 'failed',
+      ): ImplementationResult => ({
+        failureReason: options.redact(reason),
+        outcome: as,
+        report: null,
+      })
+
+      if (!ending.ok) {
+        return ending.kind === 'failed'
+          ? failed(`Codex could not implement: ${ending.reason}`)
+          : failed(ending.reason, ending.kind)
+      }
+
+      let message: string
+      try {
+        message = readFileSync(messagePath, 'utf8')
+      } catch {
+        return failed('Codex finished without writing a completion report')
+      }
+
+      // An unusable report is a turn that did not finish, not a broken
+      // Handella: the repair cycle is exactly the right answer to it.
+      let report
+      try {
+        report = parseImplementationReport(
+          options.redact(message),
+          "Codex's completion report",
+        )
+      } catch (error) {
+        return failed(
+          error instanceof DomainError
+            ? error.message
+            : 'The completion report could not be read',
+        )
+      }
+
+      return {
+        failureReason: null,
+        outcome:
+          report.outcome === 'blocked' ? 'reportedBlocked' : 'reportedDone',
+        report,
+      }
+    })
+  },
+
+  async plan(input: PlanningRequest): Promise<PlanningResult> {
+    return withScratch('handella-plan-', async (directory) => {
       const schemaPath = join(directory, 'plan-schema.json')
       const messagePath = join(directory, 'plan.json')
       // The schema the model is held to is the schema the store validates
@@ -289,24 +639,45 @@ export const createCodexAdapter = (): CodexAdapter => ({
       // Tested on the value rather than through a `resuming` flag, because
       // narrowing does not survive the round trip through a boolean and the
       // difference is one unchecked cast.
-      const args = [
-        'exec',
-        ...(input.sessionId === undefined ? [] : ['resume', input.sessionId]),
-        ...safetyOverrides,
-        ...(input.sessionId === undefined
-          ? ['--sandbox', 'read-only', '--cd', input.worktreePath]
-          : []),
-        '--json',
-        '--output-schema',
-        schemaPath,
-        '--output-last-message',
-        messagePath,
-        // `-` is the prompt, and means stdin. Passing it as an argument would
-        // put an issue description into a process listing.
-        '-',
-      ]
+      const ending = await runPass({
+        args: [
+          'exec',
+          ...(input.sessionId === undefined ? [] : ['resume', input.sessionId]),
+          ...planningOverrides,
+          ...(input.sessionId === undefined
+            ? ['--sandbox', 'read-only', '--cd', input.worktreePath]
+            : []),
+          '--json',
+          '--output-schema',
+          schemaPath,
+          '--output-last-message',
+          messagePath,
+          // `-` is the prompt, and means stdin. Passing it as an argument would
+          // put an issue description into a process listing.
+          '-',
+        ],
+        cwd: input.worktreePath,
+        label: 'Planning',
+        prompt: planningPrompt(input),
+        redact: options.redact,
+        signal: input.signal,
+        timeoutMs: planningTimeoutMs,
+      })
 
-      const sessionId = await runPass(args, planningPrompt(input), input)
+      if (!ending.ok) {
+        throw codexPlanningFailed(
+          ending.kind === 'failed'
+            ? `Codex could not plan: ${ending.reason}`
+            : ending.reason,
+          new Error(ending.stderr || 'codex wrote nothing to stderr'),
+        )
+      }
+
+      if (ending.sessionId === undefined) {
+        throw codexPlanningFailed(
+          'Codex finished without reporting a session id',
+        )
+      }
 
       let message: string
       try {
@@ -319,11 +690,9 @@ export const createCodexAdapter = (): CodexAdapter => ({
       }
 
       return {
-        content: parsePlanContent(message, "Codex's plan"),
-        sessionId,
+        content: parsePlanContent(options.redact(message), "Codex's plan"),
+        sessionId: ending.sessionId,
       }
-    } finally {
-      rmSync(directory, { force: true, recursive: true })
-    }
+    })
   },
 })

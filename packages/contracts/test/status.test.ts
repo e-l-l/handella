@@ -16,6 +16,7 @@ const validStatus = {
   integrations: {
     linear: { configured: false },
     codex: { configured: true },
+    github: { configured: true },
   },
   database: { status: 'ok', journalMode: 'wal' },
 }

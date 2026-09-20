@@ -1,6 +1,8 @@
 import type {
+  Attempt,
   AttentionItem,
   Job,
+  Milestone,
   PlanVersion,
   Repository,
   RunbookVersion,
@@ -19,8 +21,10 @@ export const jsonResponse = (body: unknown, status = 200): Promise<Response> =>
   )
 
 export interface ApiRoutes {
+  attempts?: Attempt[] | undefined
   attention?: AttentionItem[] | undefined
   jobs?: Job[] | undefined
+  milestones?: Milestone[] | undefined
   planVersions?: PlanVersion[] | undefined
   repositories?: Repository[] | undefined
   runbookVersions?: RunbookVersion[] | undefined
@@ -81,6 +85,17 @@ export const stubApi = (routes: ApiRoutes = {}) => {
     if (url.endsWith('/transitions')) return jsonResponse([])
     if (url.endsWith('/plan-versions'))
       return jsonResponse(routes.planVersions ?? [])
+    if (url.endsWith('/attempts')) return jsonResponse(routes.attempts ?? [])
+    if (url.endsWith('/milestones'))
+      return jsonResponse(routes.milestones ?? [])
+    // The one endpoint that answers with text rather than a record.
+    if (url.includes('/log'))
+      return Promise.resolve(
+        new Response('{"type":"turn.started"}\n', {
+          headers: { 'content-type': 'text/plain' },
+          status: 200,
+        }),
+      )
     if (url.startsWith('/api/jobs/'))
       return jsonResponse((routes.jobs ?? [])[0])
 

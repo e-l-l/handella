@@ -20,6 +20,31 @@ interface RequestOptions {
 
 const defaultFallback = 'The local service rejected that request.'
 
+/**
+ * A failed response, read as the service's own error where it is one. Never
+ * returns; the signature says so, so a caller does not have to pretend the
+ * lines after it are reachable.
+ */
+async function throwApiError(
+  response: Response,
+  fallbackMessage?: string,
+): Promise<never> {
+  let message = fallbackMessage ?? defaultFallback
+  let code: ApiError['code'] | 'unknown' = 'unknown'
+  try {
+    const error = (await response.json()) as Partial<ApiError>
+    if (typeof error.message === 'string') message = error.message
+    // Endpoints outside the job API carry their own codes, so an unrecognised
+    // one stays 'unknown' rather than being asserted into the union.
+    if (typeof error.code === 'string' && isApiErrorCode(error.code)) {
+      code = error.code
+    }
+  } catch {
+    // Keep the safe fallback when the response is not JSON.
+  }
+  throw new ApiRequestError(message, code)
+}
+
 export async function request<Result>(
   path: string,
   options: RequestOptions = {},
@@ -34,22 +59,7 @@ export async function request<Result>(
     ...(sendsBody ? { body: JSON.stringify(options.body) } : {}),
   })
 
-  if (!response.ok) {
-    let message = options.fallbackMessage ?? defaultFallback
-    let code: ApiError['code'] | 'unknown' = 'unknown'
-    try {
-      const error = (await response.json()) as Partial<ApiError>
-      if (typeof error.message === 'string') message = error.message
-      // Endpoints outside the job API carry their own codes, so an unrecognised
-      // one stays 'unknown' rather than being asserted into the union.
-      if (typeof error.code === 'string' && isApiErrorCode(error.code)) {
-        code = error.code
-      }
-    } catch {
-      // Keep the safe fallback when the response is not JSON.
-    }
-    throw new ApiRequestError(message, code)
-  }
+  if (!response.ok) await throwApiError(response, options.fallbackMessage)
 
   // A 204 carries no body, and parsing one as JSON throws. Deleting a
   // repository is the only such response today.
@@ -58,4 +68,22 @@ export async function request<Result>(
   }
 
   return (await response.json()) as Result
+}
+
+/**
+ * The one endpoint that answers with text rather than a record: an attempt's
+ * raw Codex stream. It is served as a tail by default, and the header says
+ * whether what arrived is the whole of it.
+ */
+export async function requestText(
+  path: string,
+): Promise<{ text: string; truncated: boolean }> {
+  const response = await fetch(path, { headers: { accept: 'text/plain' } })
+
+  if (!response.ok) await throwApiError(response, 'That log could not be read.')
+
+  return {
+    text: await response.text(),
+    truncated: response.headers.get('x-handella-truncated') === 'true',
+  }
 }

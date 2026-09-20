@@ -1,7 +1,11 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   aDispatchableJob,
+  aTemporaryDirectory,
   anIntakeJob,
   buildTestApp,
   cleanupTestContexts,
@@ -313,5 +317,43 @@ describe('GET /api/events', () => {
     expect(received).toContain(job.id)
 
     connection.abort()
+  })
+})
+
+describe('GET /api/jobs/:jobId/attempts/:attemptId/log', () => {
+  it('starts a tail at a line boundary', async () => {
+    const { app, store } = await buildTestApp()
+    const job = store.createJob(aDispatchableJob())
+    const logRoot = aTemporaryDirectory('handella-logs-')
+    const attempt = store.startAttempt({
+      jobId: job.id,
+      logRoot,
+      sessionId: 'session-1',
+    })
+    const logPath = store.attemptLogPath({
+      attemptId: attempt.id,
+      jobId: job.id,
+    })
+    mkdirSync(dirname(logPath), { recursive: true })
+    // Comfortably longer than the tail the endpoint serves, so the cut lands
+    // in the middle of a line rather than on one.
+    const line = `{"filler":"${'x'.repeat(200)}"}`
+    writeFileSync(
+      logPath,
+      `${Array.from({ length: 2_000 }, () => line).join('\n')}\n`,
+    )
+
+    const response = await app.inject({
+      method: 'GET',
+      url: `/api/jobs/${job.id}/attempts/${attempt.id}/log`,
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['x-handella-truncated']).toBe('true')
+    const served = response.body.trim().split('\n')
+    expect(served.length).toBeGreaterThan(0)
+    for (const jsonl of served) {
+      expect(() => JSON.parse(jsonl)).not.toThrow()
+    }
   })
 })

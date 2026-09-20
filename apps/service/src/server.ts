@@ -6,11 +6,13 @@ import { createCodexAdapter } from './adapters/codex-cli.js'
 import { unavailableFolderPicker } from './adapters/folders.js'
 import { createFolderPicker } from './adapters/folders-macos.js'
 import { createGitAdapter } from './adapters/git-cli.js'
+import { createGitHubAdapter } from './adapters/github-cli.js'
 import { buildApp } from './app.js'
 import { createDispatcher } from './domain/dispatch.js'
 import { createScheduler } from './domain/scheduler.js'
 import { loadConfig } from './config.js'
 import { defaultMigrationsPath, openDatabase } from './database/database.js'
+import { createRedactor } from './domain/redact.js'
 import { createStore } from './domain/store.js'
 import { createBroadcaster } from './events/broadcaster.js'
 
@@ -61,7 +63,12 @@ async function main(): Promise<void> {
     worktreeRoot: config.worktreeRoot,
   })
 
-  const codex = createCodexAdapter()
+  // Built from the configured secrets and handed to the adapter, so every line
+  // Codex writes is redacted before anything downstream can persist it.
+  const codex = createCodexAdapter({
+    redact: createRedactor(config.secretValues),
+  })
+  const github = createGitHubAdapter()
   // The dialog is AppleScript, so anywhere else the Handler types the path
   // and is told so, rather than being told osascript is missing.
   const folders =
@@ -70,8 +77,8 @@ async function main(): Promise<void> {
       : unavailableFolderPicker
 
   // Nothing this process started is still running, so anything the database
-  // still calls planning was cut off mid-pass. Done before the app is built,
-  // so no request can see a job in a state no runner is behind.
+  // still calls planning or implementing was cut off mid-pass. Done before the
+  // app is built, so no request can see a job in a state no runner is behind.
   const interrupted = store.markInterrupted()
 
   const app = await buildApp({
@@ -80,6 +87,7 @@ async function main(): Promise<void> {
     dispatcher,
     folders,
     git,
+    github,
     linear,
     store,
     ...(production ? { dashboardPath: config.dashboardPath } : {}),
@@ -100,14 +108,17 @@ async function main(): Promise<void> {
   if (interrupted.length > 0) {
     app.log.warn(
       { jobIds: interrupted.map((job) => job.id) },
-      'Returned interrupted jobs to the queue',
+      'Suspended the jobs a restart interrupted',
     )
   }
 
   const scheduler = createScheduler({
     broadcaster,
     codex,
+    git,
+    github,
     linear,
+    logRoot: config.logRoot,
     logger: app.log,
     store,
   })

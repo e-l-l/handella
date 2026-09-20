@@ -15,7 +15,22 @@ export const maxConcurrency = 3
  * on a stuck process, not a budget — a pass that reaches it has stopped making
  * progress, and the slot it holds is worth more than the pass.
  */
-export const planningTimeoutMs = 20 * 60_000
+export const planningTimeoutMs = 30 * 60_000
+
+/**
+ * The same ceiling for an implementation pass, which has more to do: a fresh
+ * worktree holds no dependencies, so the runbook's test step installs them
+ * before it can run anything.
+ */
+export const implementationTimeoutMs = 90 * 60_000
+
+/**
+ * How long a Codex pass of either kind may say nothing at all. A wall clock
+ * only catches a wedged pass once its whole budget is gone; silence catches the
+ * same pass in ten minutes, and a pass that is working is never silent — it
+ * reports every command it runs and every file it touches.
+ */
+export const codexIdleMs = 10 * 60_000
 
 /**
  * A slot is held while Codex is working in a job's worktree. Planning counts:
@@ -53,6 +68,17 @@ export type StartableJob = Job & { worktreePath: string }
  */
 export const isStartable = (job: Job): job is StartableJob =>
   isQueued(job) && job.worktreePath !== null
+
+/**
+ * What the scheduler may start implementing: a job whose plan the Handler has
+ * approved, with a worktree to run in. The same narrowing as `isStartable` and
+ * for the same reason — the caller that filtered on it should not have to
+ * coerce the field it filtered on.
+ */
+export const isImplementable = (job: Job): job is StartableJob =>
+  job.suspension === null &&
+  job.state === 'approved' &&
+  job.worktreePath !== null
 
 /**
  * The order the queue is read in: the priority the Handler set, then arrival.

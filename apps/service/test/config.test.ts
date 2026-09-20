@@ -145,3 +145,31 @@ describe('loadConfig', () => {
     )
   })
 })
+
+describe('what the redactor is given', () => {
+  it('takes Handella’s own secrets and the credentials it inherits', () => {
+    const config = loadConfig({
+      environment: {
+        GITHUB_TOKEN: 'ghp_0123456789abcdef',
+        HANDELLA_LINEAR_API_KEY: 'lin_api_0123456789',
+        NPM_CONFIG_REGISTRY: 'https://registry.example.com',
+      },
+      rootDirectory: temporaryRoot(),
+    })
+
+    // The sandbox is handed the whole environment (ADR 0010), so a credential
+    // Handella never asked for is still one it has to keep out of a log.
+    expect(config.secretValues).toContain('lin_api_0123456789')
+    expect(config.secretValues).toContain('ghp_0123456789abcdef')
+    expect(config.secretValues).not.toContain('https://registry.example.com')
+  })
+
+  it('leaves a value too short to be told apart from ordinary text', () => {
+    const config = loadConfig({
+      environment: { GH_TOKEN: 'abc' },
+      rootDirectory: temporaryRoot(),
+    })
+
+    expect(config.secretValues).toEqual([])
+  })
+})

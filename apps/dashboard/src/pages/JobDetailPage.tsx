@@ -14,9 +14,10 @@ import { Chip } from '../components/Chip.tsx'
 import { Fact } from '../components/Fact.tsx'
 import { JobActions } from '../components/JobActions.tsx'
 import { JobStateBadge } from '../components/JobStateBadge.tsx'
+import { useAttempts, useMilestones } from '../hooks/useAttempts.ts'
 import { PlanReview } from '../components/PlanReview.tsx'
 import { Skeleton } from '../components/Skeleton.tsx'
-import { TransitionTimeline } from '../components/TransitionTimeline.tsx'
+import { JobTimeline } from '../components/JobTimeline.tsx'
 import { WorkClassChip } from '../components/WorkClassChip.tsx'
 import {
   formatTimestamp,
@@ -33,6 +34,18 @@ import {
   screenTitleClass,
   secondaryButtonClass,
 } from '../styles.ts'
+
+/**
+ * Which sandbox Codex is under for this job right now. Planning reads and can
+ * write nothing; implementation writes inside the worktree and reaches the
+ * network, which is what lets it install dependencies, run the tests and open
+ * the pull request (ADR 0010).
+ */
+const sandboxOf = (job: Job): string => {
+  if (job.state === 'planning') return 'read-only'
+  if (job.state === 'implementing') return 'workspace-write · network'
+  return 'read-only until implementation'
+}
 
 /** Every card on this screen, in both columns: a title, and what it is about. */
 function Card({ children, title }: { children: ReactNode; title: string }) {
@@ -112,6 +125,8 @@ export function JobDetailPage() {
     queryFn: () => fetchPlanVersions(jobId),
     enabled: job.isSuccess,
   })
+  const attempts = useAttempts(jobId, job.isSuccess)
+  const milestones = useMilestones(jobId, job.isSuccess)
   // Named rather than identified: the id is the link, but the name is what the
   // Handler called the checkout.
   const repositories = useQuery({
@@ -153,6 +168,8 @@ export function JobDetailPage() {
 
   const plans = planVersions.data ?? []
   const history = transitions.data ?? []
+  const attemptRows = attempts.data ?? []
+  const milestoneRows = milestones.data ?? []
 
   return (
     <article>
@@ -168,11 +185,18 @@ export function JobDetailPage() {
             <div className="flex flex-wrap items-center gap-3.5">
               <h2 className="text-[16px] font-semibold">History</h2>
               <p className="font-mono text-[11.5px] text-ink-5">
-                {history.length} transitions · runbook milestones land here in
-                Phase 6
+                {history.length} transitions
+                {attemptRows.length === 0
+                  ? ''
+                  : ` · ${attemptRows.length} implementation ${attemptRows.length === 1 ? 'turn' : 'turns'}`}
               </p>
             </div>
-            <TransitionTimeline transitions={history} />
+            <JobTimeline
+              attempts={attemptRows}
+              jobId={jobId}
+              milestones={milestoneRows}
+              transitions={history}
+            />
           </section>
 
           <Card title="Plan">
@@ -220,8 +244,10 @@ export function JobDetailPage() {
                 value={job.data.codexSessionId ?? 'not started'}
               />
               {/* Stated rather than configurable: the sandbox is a guardrail,
-                  and no control in this dashboard may bypass it. */}
-              <Fact label="Sandbox" value="workspace-write" />
+                  and no control in this dashboard may bypass it. Which one is
+                  in force depends on what the job is doing — planning reads,
+                  and only implementation may write and reach the network. */}
+              <Fact label="Sandbox" value={sandboxOf(job.data)} />
               <Fact
                 label="Worktree"
                 value={

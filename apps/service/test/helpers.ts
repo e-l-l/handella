@@ -10,6 +10,7 @@ import { buildApp } from '../src/app.js'
 import { aPlanContent, createFakeCodexAdapter } from './codex-fake.js'
 import { createFakeFolderPicker } from './folders-fake.js'
 import { createFakeGitAdapter } from './git-fake.js'
+import { createFakeGitHubAdapter } from './github-fake.js'
 import {
   aLinearIssue,
   aLinearIssueLink,
@@ -164,6 +165,7 @@ export async function buildTestApp(
       worktreeRoot: aTemporaryDirectory('handella-worktrees-'),
     }),
     git,
+    github: createFakeGitHubAdapter(),
     linear,
     statusSource: healthyStatusSource,
     store: context.store,
@@ -187,6 +189,7 @@ export async function cleanupTestContexts(): Promise<void> {
 export * from './codex-fake.js'
 export * from './folders-fake.js'
 export * from './git-fake.js'
+export * from './github-fake.js'
 export * from './linear-fake.js'
 
 export const anIntakeJob = (overrides: Partial<CreateJob> = {}): CreateJob => ({
@@ -276,6 +279,22 @@ export function aPlanAwaitingApproval(
   })
   context.store.transitionJob({ actor: 'system', jobId, to: 'planReview' })
   return version
+}
+
+/**
+ * A job approved and waiting to be implemented, which is where every
+ * implementation test starts. Walked rather than seeded: `approved` has a guard
+ * behind it that reads both the approved revision and the runbook snapshot.
+ */
+export async function anApprovedJob(
+  context: TestContext,
+  sessionId = 'session-1',
+): Promise<string> {
+  const [jobId] = await aDispatchedQueue(context, 1)
+  if (jobId === undefined) throw new Error('No job was dispatched')
+  const version = aPlanAwaitingApproval(context, jobId, sessionId)
+  context.store.approvePlan({ jobId, planVersionId: version.id })
+  return jobId
 }
 
 /**

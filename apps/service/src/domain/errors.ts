@@ -243,6 +243,39 @@ export const codexSessionMissing = (jobId: string): DomainError =>
     `Job ${jobId} has a plan but no Codex session to revise it in`,
   )
 
+/**
+ * Codex answered with something the report schema rejects, despite having been
+ * given that schema. The same class of failure as `planContentInvalid`, and it
+ * takes the same path.
+ */
+export const implementationReportInvalid = (
+  message: string,
+  cause?: unknown,
+): DomainError =>
+  new DomainError('implementation_report_invalid', 502, message, { cause })
+
+export const attemptNotFound = (attemptId: string): DomainError =>
+  new DomainError('attempt_not_found', 404, `No attempt with id ${attemptId}`)
+
+/** The GitHub CLI's own text travels as `cause`, on the same terms as git's. */
+export const githubUnavailable = (
+  message: string,
+  cause?: unknown,
+): DomainError => new DomainError('github_unavailable', 502, message, { cause })
+
+/**
+ * `gh` is installed but holds no usable login. Asked before an implementation
+ * pass rather than discovered after one: the agent opens the pull request, so a
+ * logged-out `gh` is only visible once ninety minutes of work has nowhere to go.
+ */
+export const githubNotAuthenticated = (cause?: unknown): DomainError =>
+  new DomainError(
+    'github_not_authenticated',
+    503,
+    'The GitHub CLI is not logged in; run `gh auth login` and resume the job',
+    { cause },
+  )
+
 export const planVersionNotFound = (planVersionId: string): DomainError =>
   new DomainError(
     'plan_version_not_found',

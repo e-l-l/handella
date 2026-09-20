@@ -1,10 +1,15 @@
+import { maxImplementationAttempts } from '@handella/contracts'
+
 import type {
+  Attempt,
+  AttemptOutcome,
   AttentionItemKind,
   Job,
   JobSource,
   JobState,
   JobSuspension,
   LinearPriority,
+  MilestoneKind,
   PlanApprovalState,
   StatusResponse,
   WorkClass,
@@ -97,6 +102,52 @@ const timestampFormat = new Intl.DateTimeFormat(undefined, {
 
 export const formatTimestamp = (value: string): string =>
   timestampFormat.format(new Date(value))
+
+export const attemptOutcomeLabels: Record<AttemptOutcome, string> = {
+  reportedDone: 'reported done',
+  reportedBlocked: 'plan was wrong',
+  failed: 'failed',
+  timedOut: 'timed out',
+  stopped: 'stopped',
+  interrupted: 'interrupted',
+}
+
+/**
+ * Which turn this is, and its round once a Handler resume has started another.
+ * `noun` because the job page starts a line with it and the inbox continues
+ * one; only the capital differs, and it is not worth two spellings of the rest.
+ */
+export const attemptLabel = (attempt: Attempt, noun = 'attempt'): string =>
+  `${noun} ${attempt.attempt} of ${maxImplementationAttempts}${
+    attempt.round > 1 ? ` · round ${attempt.round}` : ''
+  }`
+
+export const milestoneKindLabels: Record<MilestoneKind, string> = {
+  command: 'ran',
+  fileChange: 'changed',
+  narration: 'said',
+  todoList: 'todo',
+}
+
+/**
+ * How long a turn took, in the same compact spelling as `formatAge`. A turn
+ * that has not ended is measured against now, because the number a Handler
+ * watching one wants is how long it has been going.
+ */
+export const formatDuration = (
+  startedAt: string,
+  endedAt: string | null,
+  now: number = Date.now(),
+): string => {
+  const end = endedAt === null ? now : new Date(endedAt).getTime()
+  const minutes = Math.max(
+    0,
+    Math.floor((end - new Date(startedAt).getTime()) / 60_000),
+  )
+  if (minutes < 1) return 'under a minute'
+  if (minutes < 60) return `${minutes}m`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
 
 /**
  * How long something has been waiting, in the handoff's compact spelling: 18m,

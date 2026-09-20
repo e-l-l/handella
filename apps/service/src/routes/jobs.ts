@@ -1,6 +1,8 @@
 import {
   ApiErrorSchema,
+  AttemptSchema,
   CreateJobSchema,
+  MilestoneSchema,
   JobSchema,
   JobTransitionSchema,
   PlanVersionSchema,
@@ -16,6 +18,9 @@ import {
   type FastifyPluginCallbackTypebox,
 } from '@fastify/type-provider-typebox'
 
+import { createReadStream, statSync } from 'node:fs'
+import { Transform } from 'node:stream'
+
 import type { Dispatcher } from '../domain/dispatch.js'
 import type { Store } from '../domain/store.js'
 
@@ -24,6 +29,46 @@ const PlanVersionParamsSchema = Type.Object({
   jobId: Type.String(),
   planVersionId: Type.String(),
 })
+const AttemptParamsSchema = Type.Object({
+  attemptId: Type.String(),
+  jobId: Type.String(),
+})
+
+/**
+ * How much of a turn's raw stream is served by default. A ninety-minute turn
+ * writes megabytes of JSONL and the end of it is the part that says what
+ * happened; the whole file is a deliberate ask rather than the default a job
+ * page would pull on every refetch.
+ */
+const logTailBytes = 256 * 1024
+
+/**
+ * Drops whatever is left of the line a tail landed in the middle of.
+ *
+ * A byte offset cannot know where a line begins, so the first thing a tail
+ * reads is a fragment of JSONL — and, if the cut fell inside a multi-byte
+ * character, a replacement character where text used to be. Done as it passes
+ * rather than by probing for the newline first, because a line has no length
+ * limit and a probe would need one.
+ */
+const fromNextLine = (): Transform => {
+  let found = false
+  return new Transform({
+    transform(chunk: Buffer, _encoding, done) {
+      if (found) {
+        done(null, chunk)
+        return
+      }
+      const newline = chunk.indexOf(0x0a)
+      if (newline === -1) {
+        done()
+        return
+      }
+      found = true
+      done(null, chunk.subarray(newline + 1))
+    },
+  })
+}
 
 const errorResponses = {
   404: ApiErrorSchema,
@@ -141,6 +186,80 @@ export const jobRoutes: FastifyPluginCallbackTypebox<{
       },
     },
     async (request) => store.listRunbookSnapshots(request.params.jobId),
+  )
+
+  app.get(
+    '/api/jobs/:jobId/attempts',
+    {
+      schema: {
+        params: JobIdParamsSchema,
+        response: { 200: Type.Array(AttemptSchema), ...errorResponses },
+      },
+    },
+    async (request) => store.listAttempts(request.params.jobId),
+  )
+
+  /**
+   * Every attempt's milestones in one answer rather than one call per attempt.
+   * The job page draws them all on one spine, and a running job invalidates
+   * this key every second — one request per refresh rather than one per turn.
+   */
+  app.get(
+    '/api/jobs/:jobId/milestones',
+    {
+      schema: {
+        params: JobIdParamsSchema,
+        response: { 200: Type.Array(MilestoneSchema), ...errorResponses },
+      },
+    },
+    async (request) => store.listMilestones(request.params.jobId),
+  )
+
+  /**
+   * The raw stream, streamed rather than read: the point of serving a tail is
+   * not to hold the whole file in memory on the way past.
+   */
+  app.get(
+    '/api/jobs/:jobId/attempts/:attemptId/log',
+    {
+      schema: {
+        params: AttemptParamsSchema,
+        querystring: Type.Object({ full: Type.Optional(Type.Boolean()) }),
+      },
+    },
+    async (request, reply) => {
+      const logPath = store.attemptLogPath(request.params)
+
+      let size: number
+      try {
+        size = statSync(logPath).size
+      } catch {
+        // Phase 12 deletes these while the attempt row survives, so a missing
+        // file is an ordinary answer about an old job rather than a failure.
+        return reply
+          .header('x-handella-truncated', 'false')
+          .type('text/plain; charset=utf-8')
+          .send('')
+      }
+
+      const start =
+        request.query.full === true ? 0 : Math.max(0, size - logTailBytes)
+      const file = createReadStream(logPath, { start })
+
+      let body: NodeJS.ReadableStream = file
+      if (start > 0) {
+        const whole = fromNextLine()
+        // `pipe` does not carry an error forward, and a read that fails after
+        // the headers are out would otherwise hang the response open.
+        file.on('error', (error) => whole.destroy(error))
+        body = file.pipe(whole)
+      }
+
+      return reply
+        .header('x-handella-truncated', start > 0 ? 'true' : 'false')
+        .type('text/plain; charset=utf-8')
+        .send(body)
+    },
   )
 
   app.get(
