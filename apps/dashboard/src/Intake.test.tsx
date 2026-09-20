@@ -76,7 +76,10 @@ const stubApi = (routes: Routes = {}) =>
     jobs: routes.jobs,
     repositories: routes.repositories,
     status: aStatus({
-      integrations: { linear: { configured: routes.configured ?? true } },
+      integrations: {
+        linear: { configured: routes.configured ?? true },
+        codex: { configured: true },
+      },
     }),
     extra: (url, init) => {
       if (url.startsWith('/api/intake/linear/issues')) {
@@ -512,6 +515,46 @@ describe('ad hoc intake', () => {
         },
       ])
     })
+  })
+})
+
+describe('an installation with no repository', () => {
+  it('points at the one screen that can fix it', async () => {
+    stubApi({ repositories: [] })
+    renderAt('/intake')
+
+    // Both the panel and the ad hoc form say it, and both point at the same
+    // screen, so neither is a dead end.
+    const links = await screen.findAllByRole('link', {
+      name: 'Add one in System',
+    })
+
+    expect(links).toHaveLength(2)
+    for (const link of links) expect(link).toHaveAttribute('href', '/system')
+    // Nothing to choose between, so the choice is not offered.
+    expect(screen.queryByLabelText('Repository')).not.toBeInTheDocument()
+  })
+
+  it('refuses ad hoc work before Linear is asked for an issue', async () => {
+    const fetchMock = stubApi({ repositories: [] })
+    renderAt('/intake')
+
+    const form = await screen.findByRole('form', {
+      name: 'Create an ad hoc issue',
+    })
+    await userEvent.type(
+      within(form).getByLabelText('Title'),
+      'Retire the legacy exporter',
+    )
+    const submit = within(form).getByRole('button', {
+      name: 'Create issue and job',
+    })
+
+    expect(submit).toBeDisabled()
+
+    await userEvent.click(submit)
+
+    expect(postsTo(fetchMock, '/api/intake/adhoc')).toEqual([])
   })
 })
 

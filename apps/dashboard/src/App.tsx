@@ -88,8 +88,12 @@ function AppShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-svh bg-surface text-ink">
       {/* The handoff draws this band at a fixed 70px for 1440px. Below the
           1200px the rails collapse at, the same row wraps rather than pushing
-          the concurrency chip off the edge: the nav is kept, not shortened. */}
-      <header className="flex min-h-[70px] flex-wrap items-center gap-x-[26px] gap-y-3 border-b border-line px-7 py-3 min-[1200px]:h-[70px] min-[1200px]:flex-nowrap min-[1200px]:py-0">
+          the concurrency chip off the edge: the nav is kept, not shortened.
+
+          Pinned, and opaque so what scrolls under it does not show through: a
+          rail that sticks below it (Intake's) needs the band's height to be
+          the same 70px whether the page is scrolled or not. */}
+      <header className="sticky top-0 z-20 flex min-h-[70px] flex-wrap items-center gap-x-[26px] gap-y-3 border-b border-line bg-surface px-7 py-3 min-[1200px]:h-[70px] min-[1200px]:flex-nowrap min-[1200px]:py-0">
         <div className="flex items-center gap-[11px]">
           <BrandMark />
           <p className="text-[15px] font-semibold tracking-[-0.2px]">

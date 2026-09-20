@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { unconfiguredLinearAdapter } from './adapters/linear.js'
-import { stubCodexAdapter } from './adapters/codex.js'
+import { createCodexAdapter } from './adapters/codex-cli.js'
 import { createGitAdapter } from './adapters/git-cli.js'
 import { buildApp } from './app.js'
 import { createDispatcher } from './domain/dispatch.js'
@@ -59,8 +59,16 @@ async function main(): Promise<void> {
     worktreeRoot: config.worktreeRoot,
   })
 
+  const codex = createCodexAdapter()
+
+  // Nothing this process started is still running, so anything the database
+  // still calls planning was cut off mid-pass. Done before the app is built,
+  // so no request can see a job in a state no runner is behind.
+  const interrupted = store.markInterrupted()
+
   const app = await buildApp({
     broadcaster,
+    codex,
     dispatcher,
     git,
     linear,
@@ -80,9 +88,17 @@ async function main(): Promise<void> {
 
   // Started after the app is built, so the first pass sees a store that is
   // fully wired, and stopped before the database closes under it.
+  if (interrupted.length > 0) {
+    app.log.warn(
+      { jobIds: interrupted.map((job) => job.id) },
+      'Returned interrupted jobs to the queue',
+    )
+  }
+
   const scheduler = createScheduler({
     broadcaster,
-    codex: stubCodexAdapter,
+    codex,
+    linear,
     logger: app.log,
     store,
   })

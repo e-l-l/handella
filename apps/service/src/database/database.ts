@@ -7,7 +7,8 @@ import { eq } from 'drizzle-orm'
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator'
 
-import { appInstallation } from './schema.js'
+import { defaultRunbookContent } from './default-runbook.js'
+import { appInstallation, runbookVersions } from './schema.js'
 
 export interface InstallationStatus {
   createdAt: Date
@@ -78,6 +79,21 @@ export function openDatabase(options: OpenDatabaseOptions): DatabaseContext {
         lastStartedAt: now,
       })
       .onConflictDoNothing({ target: appInstallation.singletonKey })
+      .run()
+
+    // Version 1 of the Runbook, so an installation is never in the state of
+    // having a job to approve and no procedure to snapshot. Conflict-free for
+    // the same reason the installation row is: this runs on every startup, and
+    // a Handler who has edited theirs is already past version 1.
+    database
+      .insert(runbookVersions)
+      .values({
+        id: idFactory(),
+        version: 1,
+        content: defaultRunbookContent,
+        createdAt: now,
+      })
+      .onConflictDoNothing({ target: runbookVersions.version })
       .run()
 
     secureDatabaseFiles(options.databasePath)

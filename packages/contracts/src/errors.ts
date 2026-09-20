@@ -23,6 +23,12 @@ export const apiErrorCodes = [
   'canonical_branch_unowned',
   'git_unavailable',
   'worktree_creation_failed',
+  'codex_unavailable',
+  'codex_planning_failed',
+  'codex_session_missing',
+  'plan_version_not_found',
+  'plan_content_invalid',
+  'runbook_version_not_found',
   'validation_failed',
   'internal_error',
 ] as const

@@ -6,11 +6,13 @@ import { join } from 'node:path'
 import type { CreateJob, DomainEvent } from '@handella/contracts'
 
 import { buildApp } from '../src/app.js'
+import { aPlanContent, createFakeCodexAdapter } from './codex-fake.js'
 import { createFakeGitAdapter } from './git-fake.js'
 import {
   aLinearIssue,
   aLinearIssueLink,
   createFakeLinearAdapter,
+  type FakeLinearAdapter,
 } from './linear-fake.js'
 import {
   defaultMigrationsPath,
@@ -18,11 +20,7 @@ import {
   type DatabaseContext,
   type StatusSource,
 } from '../src/database/database.js'
-import {
-  repositories,
-  reviewRounds,
-  runbookSnapshots,
-} from '../src/database/schema.js'
+import { repositories, reviewRounds } from '../src/database/schema.js'
 import { createDispatcher } from '../src/domain/dispatch.js'
 import { createStore, type Store } from '../src/domain/store.js'
 import {
@@ -36,6 +34,12 @@ type App = Awaited<ReturnType<typeof buildApp>>
 export interface TestContext {
   broadcaster: Broadcaster
   database: DatabaseContext
+  /**
+   * One Linear per context. Dispatch reads an issue back and so does every
+   * planning pass, so two fakes would mean a job dispatched against an issue
+   * that planning cannot find.
+   */
+  linear: FakeLinearAdapter
   /** Every event published since the context was created, in order. */
   published: DomainEvent[]
   store: Store
@@ -101,6 +105,7 @@ export function createTestContext(
   return {
     broadcaster,
     database,
+    linear: createFakeLinearAdapter(),
     published,
     store: createStore({
       broadcaster,
@@ -130,10 +135,14 @@ export async function buildTestApp(
 ): Promise<{ app: App; context: TestContext; store: Store }> {
   const { context: given, ...appOverrides } = overrides
   const context = given ?? createTestContext()
-  const linear = createFakeLinearAdapter()
+  // One Linear for the app and the dispatcher inside it, whether that is the
+  // context's or one the test brought: two would let a job be dispatched
+  // against an issue the routes cannot see.
+  const linear = appOverrides.linear ?? context.linear
   const git = createFakeGitAdapter()
   const app = await buildApp({
     broadcaster: context.broadcaster,
+    codex: createFakeCodexAdapter(),
     dispatcher: createDispatcher({
       git,
       linear,
@@ -161,6 +170,7 @@ export async function cleanupTestContexts(): Promise<void> {
   }
 }
 
+export * from './codex-fake.js'
 export * from './git-fake.js'
 export * from './linear-fake.js'
 
@@ -207,9 +217,10 @@ export const aDispatchedQueue = async (
   const issues = Array.from({ length: count }, (_, index) =>
     aQueueableIssue(index),
   )
+  context.linear.issues.push(...issues)
   const dispatcher = createDispatcher({
     git: createFakeGitAdapter(),
-    linear: createFakeLinearAdapter({ issues }),
+    linear: context.linear,
     store: context.store,
     worktreeRoot: aTemporaryDirectory('handella-worktrees-'),
   })
@@ -232,20 +243,47 @@ export const aDispatchedQueue = async (
 }
 
 /**
- * Nothing writes a snapshot or a review round until Phases 5 and 11, so the
- * tests that read them back seed the rows the way those phases will.
+ * A job sitting in planReview with a plan to answer, which is the state every
+ * approval and change-request test starts from. Walks the real path rather
+ * than seeding rows: the session id and the revision are both things the
+ * approval flow reads back.
  */
-export function aRunbookSnapshot(
+export function aPlanAwaitingApproval(
   context: TestContext,
   jobId: string,
-  content: string,
-): void {
-  context.database.drizzle
-    .insert(runbookSnapshots)
-    .values({ id: randomUUID(), jobId, content, createdAt: new Date() })
-    .run()
+  sessionId = 'session-1',
+) {
+  context.store.transitionJob({ actor: 'system', jobId, to: 'planning' })
+  context.store.recordCodexSession({ jobId, sessionId })
+  const version = context.store.createPlanVersion({
+    content: aPlanContent(),
+    jobId,
+  })
+  context.store.transitionJob({ actor: 'system', jobId, to: 'planReview' })
+  return version
 }
 
+/**
+ * A job walked all the way to merged, which is what ADR 0004's round counting
+ * needs behind an issue. Approval is taken properly rather than as a bare
+ * move, because a job cannot reach `approved` without a plan and a snapshot.
+ */
+export function aMergedJob(context: TestContext, jobId: string): void {
+  context.store.transitionJob({ actor: 'handler', jobId, to: 'queued' })
+  const version = aPlanAwaitingApproval(context, jobId)
+  context.store.approvePlan({ jobId, planVersionId: version.id })
+
+  for (const to of ['implementing', 'prOpen', 'merged'] as const) {
+    context.store.transitionJob({ actor: 'handler', jobId, to })
+  }
+}
+
+/**
+ * Nothing writes a review round until Phase 11, so the test that reads one
+ * back seeds the row the way that phase will. Runbook snapshots are no longer
+ * seeded at all: approval writes them now, and a seeded one would prove less
+ * than the write that really happens.
+ */
 export function aReviewRound(
   context: TestContext,
   jobId: string,

@@ -1,4 +1,10 @@
-import type { Job, Repository, StatusResponse } from '@handella/contracts'
+import type {
+  Job,
+  PlanVersion,
+  Repository,
+  RunbookVersion,
+  StatusResponse,
+} from '@handella/contracts'
 
 /**
  * The records more than one suite needs, typed against the contracts so a
@@ -18,7 +24,10 @@ export const aStatus = (
     createdAt: '2026-09-18T09:00:00.000Z',
     lastStartedAt: '2026-09-18T10:00:00.000Z',
   },
-  integrations: { linear: { configured: true } },
+  integrations: {
+    linear: { configured: true },
+    codex: { configured: true },
+  },
   database: { status: 'ok', journalMode: 'wal' },
   ...overrides,
 })
@@ -64,5 +73,43 @@ export const aRepository = (
   defaultBaseBranch: 'dev',
   createdAt: '2026-09-18T09:00:00.000Z',
   updatedAt: '2026-09-18T09:00:00.000Z',
+  ...overrides,
+})
+
+export const aRunbookVersion = (
+  overrides: Partial<RunbookVersion> = {},
+): RunbookVersion => ({
+  id: '5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f',
+  version: 1,
+  content: 'Run the suite. Open a pull request.',
+  createdAt: '2026-09-18T09:00:00.000Z',
+  ...overrides,
+})
+
+export const aPlanVersion = (
+  overrides: Partial<PlanVersion> = {},
+): PlanVersion => ({
+  id: '7e8f9a0b-1c2d-4e3f-8a4b-5c6d7e8f9a0b',
+  jobId: '123e4567-e89b-42d3-a456-426614174000',
+  revision: 1,
+  content: {
+    summary: 'Make the login test wait for the session cookie.',
+    steps: [
+      {
+        id: 'await-cookie',
+        title: 'Await the session cookie before asserting',
+        detail: 'The assertion races the redirect.',
+        files: ['test/login.test.ts'],
+        required: true,
+      },
+    ],
+    verification: ['npm test -- login'],
+    risks: [],
+    outOfScope: [],
+  },
+  feedback: null,
+  approvalState: 'pending',
+  approvedAt: null,
+  createdAt: '2026-09-18T09:00:00.000Z',
   ...overrides,
 })

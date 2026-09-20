@@ -7,7 +7,7 @@ import {
   aLinearIssueLink,
   anIntakeJob,
   aReviewRound,
-  aRunbookSnapshot,
+  aPlanAwaitingApproval,
   cleanupTestContexts,
   createTestContext,
   testRepositoryId,
@@ -197,14 +197,13 @@ describe('the attention inbox', () => {
     const { context, jobId } = queuedJob()
     const { store } = context
 
-    store.transitionJob({ actor: 'system', jobId, to: 'planning' })
-    store.transitionJob({ actor: 'system', jobId, to: 'planReview' })
+    const version = aPlanAwaitingApproval(context, jobId)
 
     const open = store.listAttentionItems()
     expect(open).toHaveLength(1)
     expect(open[0]).toMatchObject({ jobId, kind: 'planApproval' })
 
-    store.transitionJob({ actor: 'handler', jobId, to: 'approved' })
+    store.approvePlan({ jobId, planVersionId: version.id })
 
     expect(store.listAttentionItems()).toEqual([])
     expect(store.listAttentionItems({ includeResolved: true })).toHaveLength(1)
@@ -305,15 +304,34 @@ describe('the attention inbox', () => {
 describe('the supporting records', () => {
   it('reads back the runbook snapshot a job will execute', () => {
     const { context, jobId } = queuedJob()
-    aRunbookSnapshot(context, jobId, '1. Reproduce the failure')
+    const runbook = context.store.createRunbookVersion({
+      content: '1. Reproduce the failure',
+    })
+    const version = aPlanAwaitingApproval(context, jobId)
 
+    context.store.approvePlan({ jobId, planVersionId: version.id })
     const snapshots = context.store.listRunbookSnapshots(jobId)
 
     expect(snapshots).toHaveLength(1)
     expect(snapshots[0]).toMatchObject({
       jobId,
+      runbookVersionId: runbook.id,
       content: '1. Reproduce the failure',
     })
+  })
+
+  it('freezes the runbook as it was, not as it later becomes', () => {
+    const { context, jobId } = queuedJob()
+    context.store.createRunbookVersion({ content: 'Run the suite' })
+    const version = aPlanAwaitingApproval(context, jobId)
+    context.store.approvePlan({ jobId, planVersionId: version.id })
+
+    context.store.createRunbookVersion({ content: 'Run the suite twice' })
+
+    expect(context.store.listRunbookSnapshots(jobId)[0]?.content).toBe(
+      'Run the suite',
+    )
+    expect(context.store.activeRunbook().content).toBe('Run the suite twice')
   })
 
   it('reads back review rounds in the order they happened', () => {
@@ -339,25 +357,27 @@ describe('the supporting records', () => {
 
 describe('the full lifecycle', () => {
   it('walks a job from intake to archived', () => {
-    const { store } = createTestContext()
+    const context = createTestContext()
+    const { store } = context
     const job = store.createJob(aDispatchableJob())
-    const path = [
-      'queued',
-      'planning',
-      'planReview',
-      'approved',
+
+    store.transitionJob({ actor: 'handler', jobId: job.id, to: 'queued' })
+    // Approval is the one step with writes behind it, so it is taken the way
+    // the Handler takes it rather than as a bare move.
+    const version = aPlanAwaitingApproval(context, job.id)
+    store.approvePlan({ jobId: job.id, planVersionId: version.id })
+
+    for (const to of [
       'implementing',
       'prOpen',
       'merged',
       'archived',
-    ] as const
-
-    for (const to of path) {
+    ] as const) {
       store.transitionJob({ actor: 'system', jobId: job.id, to })
     }
 
     expect(store.getJob(job.id).state).toBe('archived')
-    expect(store.listJobTransitions(job.id)).toHaveLength(path.length)
+    expect(store.listJobTransitions(job.id)).toHaveLength(8)
     expect(store.listAttentionItems()).toEqual([])
   })
 })

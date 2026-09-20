@@ -6,6 +6,7 @@ import {
 } from '@handella/contracts'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
+import { Link } from 'react-router'
 
 import { createAdhocJob, fetchLinearTeams, intakeKeys } from '../api/intake.ts'
 import { jobKeys } from '../api/jobs.ts'
@@ -59,9 +60,9 @@ const trimmedOrUndefined = (value: string): string | undefined => {
  * Linear can name a canonical branch and a job without one can never be
  * dispatched.
  *
- * Nothing proposes a work class: the masterplan files that under Dispatch and
- * gives it to the Codex adapter Phase 5 introduces, so until then the Handler
- * picks.
+ * Nothing proposes a work class: the masterplan files that under Dispatch, and
+ * Phase 5's Codex adapter plans an already-classified job rather than
+ * classifying one, so the Handler still picks.
  */
 export function AdhocIssueForm({
   onCreated,
@@ -188,11 +189,27 @@ export function AdhocIssueForm({
 
       <button
         className={`self-start ${primaryButtonClass} disabled:opacity-50`}
-        disabled={create.isPending}
+        disabled={create.isPending || repositoryId === ''}
         type="submit"
       >
         Create issue and job
       </button>
+
+      {/* Without a checkout there is nothing to cut a worktree from, and the
+          job half of this request would be refused after the Linear issue had
+          already been made. */}
+      {repositoryId === '' ? (
+        <p className="text-[12px] text-ink-5">
+          No repository is configured, so no job can be created yet.{' '}
+          <Link
+            className="text-mint-soft underline underline-offset-2"
+            to="/system"
+          >
+            Add one in System
+          </Link>
+          .
+        </p>
+      ) : null}
 
       {create.error === null ? null : (
         <p className="text-[13px] text-red-ink" role="alert">

@@ -1,4 +1,3 @@
-import type { JobState } from '@handella/contracts'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
@@ -12,6 +11,7 @@ import {
   aLinearIssueLink,
   aLinearTeam,
   aLinearWorkflowState,
+  aMergedJob,
   buildTestApp,
   cleanupTestContexts,
   createFakeLinearAdapter,
@@ -32,17 +32,6 @@ const intake = {
   repositoryId: testRepositoryId,
   baseBranch: 'dev',
 }
-
-/** The whole happy life of a job, so a test can put one behind it. */
-const toMerged: JobState[] = [
-  'queued',
-  'planning',
-  'planReview',
-  'approved',
-  'implementing',
-  'prOpen',
-  'merged',
-]
 
 describe('GET /api/intake/linear/issues', () => {
   it('returns the page the adapter produced', async () => {
@@ -88,16 +77,14 @@ describe('GET /api/intake/linear/issues', () => {
   })
 
   it('answers the branch a repeat job would take, so the Handler sees it first', async () => {
-    const { app, store } = await buildTestApp()
+    const { app, context } = await buildTestApp()
 
     const created = await app.inject({
       method: 'POST',
       url: '/api/intake/linear',
       payload: intake,
     })
-    for (const to of toMerged) {
-      store.transitionJob({ actor: 'handler', jobId: created.json().id, to })
-    }
+    aMergedJob(context, created.json().id)
 
     const response = await app.inject({
       method: 'GET',
@@ -389,7 +376,7 @@ describe('one Linear issue over its whole life', () => {
   })
 
   it('can be taken again after it merges, on its own branch', async () => {
-    const { app, store } = await buildTestApp()
+    const { app, context } = await buildTestApp()
 
     const first = await app.inject({
       method: 'POST',
@@ -400,9 +387,7 @@ describe('one Linear issue over its whole life', () => {
       'ell/eng-412-fix-flaky-login-test',
     )
 
-    for (const to of toMerged) {
-      store.transitionJob({ actor: 'handler', jobId: first.json().id, to })
-    }
+    aMergedJob(context, first.json().id)
 
     const second = await app.inject({
       method: 'POST',
@@ -414,9 +399,7 @@ describe('one Linear issue over its whole life', () => {
       'ell/eng-412-fix-flaky-login-test-2',
     )
 
-    for (const to of toMerged) {
-      store.transitionJob({ actor: 'handler', jobId: second.json().id, to })
-    }
+    aMergedJob(context, second.json().id)
 
     const third = await app.inject({
       method: 'POST',

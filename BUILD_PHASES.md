@@ -39,7 +39,7 @@ Add Git and repository operations for refreshing a selected remote base, validat
 
 ## Phase 5: Routine planning and approval
 
-Add the Codex adapter for read-only planning, structured plan capture, plan revision history, one change-request cycle, approval, and immutable runbook snapshots.
+Add the Codex adapter for read-only planning, structured plan capture, plan revision history, an unbounded change-request cycle, approval, and immutable runbook snapshots.
 
 **Outcome:** A Routine job can move from intake through a supervised, persisted planning flow and become approved for implementation with the exact runbook version it will execute.
 

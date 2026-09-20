@@ -2,11 +2,13 @@ import {
   availableSlots,
   isStartable,
   orderQueue,
-  type Job,
+  type StartableJob,
 } from '@handella/contracts'
 
 import type { CodexAdapter } from '../adapters/codex.js'
+import type { LinearAdapter } from '../adapters/linear.js'
 import type { Broadcaster } from '../events/broadcaster.js'
+import { dispatchNeedsLinearIssue } from './errors.js'
 import type { Store } from './store.js'
 
 export interface Scheduler {
@@ -24,6 +26,7 @@ interface SchedulerLogger {
 interface SchedulerOptions {
   broadcaster: Broadcaster
   codex: CodexAdapter
+  linear: LinearAdapter
   logger?: SchedulerLogger
   store: Store
 }
@@ -34,27 +37,62 @@ interface SchedulerOptions {
  * would be a second source of truth that is usually wrong.
  */
 export function createScheduler(options: SchedulerOptions): Scheduler {
-  const { broadcaster, codex, logger, store } = options
+  const { broadcaster, codex, linear, logger, store } = options
 
   let unsubscribe: (() => void) | undefined
   let running = false
   /** A pass asked for while one was running, so nothing is missed. */
   let again = false
+  /**
+   * Set once `stop` has been called. A pass cut off by shutdown is not a
+   * failed pass: its job is left in `planning` so the next startup's
+   * reconciliation returns it to the queue, which is the one place that knows
+   * an interruption from a fault.
+   */
+  let shuttingDown = false
   const inFlight = new Set<Promise<void>>()
+  /** The live passes, so a stop or a shutdown can reach the process itself. */
+  const passes = new Map<string, AbortController>()
 
   /**
    * The slot is claimed by the transition, which has already committed by the
    * time this is awaited — so the pass runs without holding up the next one,
    * and the store is what says how many slots are left.
    */
-  const runPlanningPass = async (job: Job): Promise<void> => {
+  const runPlanningPass = async (job: StartableJob): Promise<void> => {
+    const abort = new AbortController()
+    passes.set(job.id, abort)
+
     try {
+      if (job.linearIssueId === null) {
+        throw dispatchNeedsLinearIssue()
+      }
+
+      // Read now rather than trusted from intake, for the reason Dispatch
+      // re-reads it: Linear owns the issue and the Handler may have rewritten
+      // it since the job was taken.
+      const issue = await linear.getIssue(job.linearIssueId)
+      const runbook = store.activeRunbook()
+
+      // A job that has planned before is revising, and what it is revising
+      // against is the feedback on its newest revision. The plan itself is not
+      // sent: it is already in the session this pass resumes.
+      const feedback = store.latestPlanVersion(job.id)?.feedback ?? undefined
+
       const result = await codex.plan({
+        feedback,
+        issue,
         job,
-        // Narrowed by `isStartable`, which is what makes a job eligible.
-        worktreePath: job.worktreePath ?? '',
+        runbook: runbook.content,
+        sessionId: job.codexSessionId ?? undefined,
+        signal: abort.signal,
+        worktreePath: job.worktreePath,
       })
 
+      // Recorded before the plan, so a session is never lost to a failure in
+      // the write that follows it: without the id the next revision has no
+      // conversation to continue and the job cannot be revised at all.
+      store.recordCodexSession({ jobId: job.id, sessionId: result.sessionId })
       store.createPlanVersion({ content: result.content, jobId: job.id })
       store.transitionJob({
         actor: 'system',
@@ -65,20 +103,29 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     } catch (error) {
       logger?.error({ err: error, jobId: job.id }, 'Planning pass failed')
 
-      // The slot has to come back, and a job stopped by the system is the
-      // orthogonal way to say so without inventing a lifecycle state (ADR 0003).
+      // Shutdown is not a fault: the job is left in `planning` for the next
+      // startup's reconciliation, which is the one place that can tell an
+      // interruption from a failure.
+      if (shuttingDown) return
+
       try {
-        store.suspendJob({
+        // The slot has to come back, and a job stopped by the system is the
+        // orthogonal way to say so without inventing a lifecycle state
+        // (ADR 0003). The store re-queues as it stops, so the slot is given
+        // back rather than merely freed: a job resumed in `planning` would
+        // hold one with nothing running in it.
+        store.abandonPlanningPass({
           jobId: job.id,
           reason: error instanceof Error ? error.message : String(error),
-          suspension: 'stoppedBySystem',
         })
-      } catch (suspendError) {
+      } catch (abandonError) {
         logger?.error(
-          { err: suspendError, jobId: job.id },
-          'Could not suspend a job whose planning pass failed',
+          { err: abandonError, jobId: job.id },
+          'Could not return a job whose planning pass failed to the queue',
         )
       }
+    } finally {
+      passes.delete(job.id)
     }
   }
 
@@ -129,16 +176,33 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 
   return {
     start() {
+      shuttingDown = false
       unsubscribe ??= broadcaster.subscribe((event) => {
         // Only a job's movement can free or fill a slot; attention items cannot.
-        if (event.name === 'job.changed') tick()
+        if (event.name !== 'job.changed') return
+
+        // A stopped job stops paying for Codex. Without this the suspension
+        // would free the slot in the database while the process it stands for
+        // kept running in the worktree.
+        if (event.data.suspension !== null) {
+          passes.get(event.data.jobId)?.abort()
+        }
+
+        tick()
       })
       tick()
     },
 
     stop() {
+      shuttingDown = true
       unsubscribe?.()
       unsubscribe = undefined
+
+      // Asked to stop rather than waited for: `whenIdle` runs next, and a pass
+      // may have twenty minutes left in it.
+      for (const pass of passes.values()) {
+        pass.abort()
+      }
     },
 
     async whenIdle() {

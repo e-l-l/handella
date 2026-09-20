@@ -20,10 +20,13 @@ import {
   type JobSuspension,
   type JobTransitionRecord,
   type CreateRepository,
+  type CreateRunbookVersion,
+  type PlanContent,
   type PlanVersion,
   type Repository,
   type ReviewRound,
   type RunbookSnapshot,
+  type RunbookVersion,
   type TransitionActor,
   type UpdateRepository,
 } from '@handella/contracts'
@@ -48,17 +51,21 @@ import type { Broadcaster } from '../events/broadcaster.js'
 import {
   attentionItemNotFound,
   canonicalBranchClaimed,
+  codexSessionMissing,
   dispatchNeedsLinearIssue,
   dispatchNeedsRepository,
   illegalTransition,
   jobNotFound,
   linearIssueAlreadyLinked,
+  planVersionNotFound,
   repositoryInUse,
   repositoryNotFound,
+  runbookVersionNotFound,
   stateConflict,
   suspensionNotAllowed,
   transitionGuardFailed,
 } from './errors.js'
+import { assertPlanContent, parsePlanContent } from './plan-content.js'
 import {
   attentionItems,
   jobTransitions,
@@ -67,6 +74,7 @@ import {
   repositories,
   reviewRounds,
   runbookSnapshots,
+  runbookVersions,
 } from '../database/schema.js'
 
 type JobRow = typeof jobs.$inferSelect
@@ -75,6 +83,7 @@ type AttentionRow = typeof attentionItems.$inferSelect
 type TransitionRow = typeof jobTransitions.$inferSelect
 type PlanRow = typeof planVersions.$inferSelect
 type RunbookRow = typeof runbookSnapshots.$inferSelect
+type RunbookVersionRow = typeof runbookVersions.$inferSelect
 type ReviewRow = typeof reviewRounds.$inferSelect
 type Transaction = Parameters<Parameters<HandellaDatabase['transaction']>[0]>[0]
 /** Whatever a read can run on: the connection outside a unit of work, the transaction inside one. */
@@ -144,14 +153,45 @@ export interface SuspendJobInput {
   suspension: JobSuspension
 }
 
+export interface ApprovePlanInput {
+  expectedState?: JobState | undefined
+  jobId: string
+  planVersionId: string
+}
+
+export interface RequestPlanChangesInput extends ApprovePlanInput {
+  feedback: string
+}
+
 export interface Store {
   /** The compensating write: git failed, so the claim is given back. */
   abandonDispatch(input: { jobId: string; reason: string }): Job
+  /**
+   * The other compensating write: a pass ended without producing a plan, so
+   * the slot is given back. Stopped and re-queued together, the way a restart
+   * does it — `planning` is not a state the scheduler starts from, so a job
+   * left there once its pass has ended holds a third of the machine for as
+   * long as it sits, and lifting its suspension would not hand that back.
+   *
+   * A job the Handler had already stopped keeps their suspension and their
+   * reason, and is re-queued on the same terms. A job that has already left
+   * `planning` is returned untouched.
+   */
+  abandonPlanningPass(input: { jobId: string; reason: string }): Job
+  /**
+   * Approval in one transaction: the revision is marked, the Runbook in force
+   * is copied against the job, and only then does the job move. The guard on
+   * `approved` reads both of those writes, so doing them separately would be a
+   * job that is approved with nothing to execute.
+   */
+  approvePlan(input: ApprovePlanInput): Job
   claimForDispatch(input: ClaimForDispatchInput): DispatchClaim
   createJob(input: CreateJob): Job
-  /** Phase 5 owns the content's shape; this only keeps the revisions in order. */
-  createPlanVersion(input: { content: string; jobId: string }): PlanVersion
+  /** Numbering is per job and every revision is kept, approved or not. */
+  createPlanVersion(input: { content: PlanContent; jobId: string }): PlanVersion
   createRepository(input: CreateRepository): Repository
+  /** Append-only: the new version becomes the active one by being the highest. */
+  createRunbookVersion(input: CreateRunbookVersion): RunbookVersion
   deleteRepository(repositoryId: string): void
   getRepository(repositoryId: string): Repository
   listRepositories(): Repository[]
@@ -166,8 +206,27 @@ export interface Store {
   listJobTransitions(jobId: string): JobTransitionRecord[]
   listJobs(): Job[]
   listPlanVersions(jobId: string): PlanVersion[]
+  /**
+   * The newest revision on its own, for the callers that only ever want that
+   * one. ADR 0007 puts no ceiling on how many a job accumulates, so reading
+   * the whole history to look at the end of it grows without bound.
+   */
+  latestPlanVersion(jobId: string): PlanVersion | undefined
   listReviewRounds(jobId: string): ReviewRound[]
   listRunbookSnapshots(jobId: string): RunbookSnapshot[]
+  listRunbookVersions(): RunbookVersion[]
+  /** The Runbook a plan approved now would execute: the highest version. */
+  activeRunbook(): RunbookVersion
+  /**
+   * Nothing this process started is still running, so anything the database
+   * says is planning was cut off mid-pass. Returned to the queue and suspended
+   * rather than left where it was: `planning` holds a slot, and after three
+   * restarts mid-plan an untouched installation would never start a job again.
+   */
+  markInterrupted(): Job[]
+  recordCodexSession(input: { jobId: string; sessionId: string }): Job
+  /** The Handler's feedback, and the job back to the queue to answer it. */
+  requestPlanChanges(input: RequestPlanChangesInput): Job
   recordWorktree(input: { jobId: string; worktreePath: string }): Job
   /**
    * The whole order in one write, so two jobs can never share a position.
@@ -234,6 +293,65 @@ const kindsOf = (
 const lifecycleKinds = kindsOf(attentionOnEnter)
 const suspensionKinds = kindsOf(suspensionAttention)
 
+/**
+ * What has to be true of a job before it may enter a state, asked on every
+ * path into it. A table rather than a run of `if`s in the transition, because
+ * the semantic endpoints are not the only way a job moves: the Handler can
+ * drive a transition by hand, the scheduler drives its own, and a rule that
+ * only the polite caller honours is not a rule.
+ */
+type TransitionGuard = (tx: Transaction, job: JobRow) => void
+
+/** CONTEXT.md: the canonical branch is authoritative and Dispatch fixes it. */
+const requiresCanonicalBranch: TransitionGuard = (_tx, job) => {
+  if (job.canonicalBranch === null) {
+    throw transitionGuardFailed(
+      'A job cannot be queued until Linear has provided its canonical branch name',
+    )
+  }
+}
+
+/**
+ * Approved means "ready to implement, and here is exactly what will be
+ * implemented and how". Both halves are records, so both are checked: a job
+ * that reached this state without them would hand Phase 6 nothing to execute.
+ */
+const requiresApprovedPlanAndSnapshot: TransitionGuard = (tx, job) => {
+  const approved = tx
+    .select({ id: planVersions.id })
+    .from(planVersions)
+    .where(
+      and(
+        eq(planVersions.jobId, job.id),
+        eq(planVersions.approvalState, 'approved'),
+      ),
+    )
+    .get()
+
+  if (approved === undefined) {
+    throw transitionGuardFailed(
+      'A job cannot be approved until one of its plan revisions has been',
+    )
+  }
+
+  const snapshot = tx
+    .select({ id: runbookSnapshots.id })
+    .from(runbookSnapshots)
+    .where(eq(runbookSnapshots.jobId, job.id))
+    .get()
+
+  if (snapshot === undefined) {
+    throw transitionGuardFailed(
+      'A job cannot be approved without a runbook snapshot to execute',
+    )
+  }
+}
+
+const transitionGuards: Partial<Record<JobState, TransitionGuard>> = {
+  queued: requiresCanonicalBranch,
+  approved: requiresApprovedPlanAndSnapshot,
+}
+
 const toJob = (row: JobRow): Job => ({
   id: row.id,
   source: row.source,
@@ -288,7 +406,7 @@ const toPlanVersion = (row: PlanRow): PlanVersion => ({
   id: row.id,
   jobId: row.jobId,
   revision: row.revision,
-  content: row.content,
+  content: parsePlanContent(row.content, 'A stored plan'),
   feedback: row.feedback ?? null,
   approvalState: row.approvalState,
   approvedAt: row.approvedAt?.toISOString() ?? null,
@@ -298,6 +416,14 @@ const toPlanVersion = (row: PlanRow): PlanVersion => ({
 const toRunbookSnapshot = (row: RunbookRow): RunbookSnapshot => ({
   id: row.id,
   jobId: row.jobId,
+  runbookVersionId: row.runbookVersionId,
+  content: row.content,
+  createdAt: row.createdAt.toISOString(),
+})
+
+const toRunbookVersion = (row: RunbookVersionRow): RunbookVersion => ({
+  id: row.id,
+  version: row.version,
   content: row.content,
   createdAt: row.createdAt.toISOString(),
 })
@@ -497,6 +623,152 @@ export function createStore(options: CreateStoreOptions): Store {
     const job = toJob(row)
     events.push(jobChanged(job))
     return job
+  }
+
+  /**
+   * One move, inside a transaction someone else opened. Separate from
+   * `transitionJob` so an operation with writes of its own — approval, a change
+   * request, restart reconciliation — can do them and move the job together,
+   * and still be refused by the same guards a bare transition is.
+   */
+  const applyTransition = (
+    tx: Transaction,
+    input: TransitionJobInput,
+    now: Date,
+    events: DomainEvent[],
+  ): Job => {
+    const current = readJob(tx, input.jobId)
+
+    if (
+      input.expectedState !== undefined &&
+      input.expectedState !== current.state
+    ) {
+      throw stateConflict(input.expectedState)
+    }
+
+    if (!canTransition(current.state, input.to)) {
+      throw illegalTransition(current.state, input.to)
+    }
+
+    transitionGuards[input.to]?.(tx, current)
+
+    // Guarded so a move applies only to the state it was decided against.
+    const updated = tx
+      .update(jobs)
+      .set({ state: input.to, updatedAt: now })
+      .where(and(eq(jobs.id, input.jobId), eq(jobs.state, current.state)))
+      .run()
+
+    if (updated.changes === 0) {
+      throw stateConflict(current.state)
+    }
+
+    tx.insert(jobTransitions)
+      .values({
+        id: newId(),
+        jobId: input.jobId,
+        fromState: current.state,
+        toState: input.to,
+        actor: input.actor,
+        reason: input.reason ?? null,
+        occurredAt: now,
+      })
+      .run()
+
+    const next: JobRow = { ...current, state: input.to, updatedAt: now }
+    syncLifecycleAttention(tx, next, now, events)
+
+    const job = toJob(next)
+    events.push(jobChanged(job))
+    return job
+  }
+
+  /**
+   * The job's newest plan revision, which is the only one the Handler may
+   * answer: approving or re-opening an older one would decide against a plan
+   * that has already been superseded.
+   */
+  const readNewestPlan = (
+    executor: Executor,
+    jobId: string,
+  ): PlanRow | undefined =>
+    executor
+      .select()
+      .from(planVersions)
+      .where(eq(planVersions.jobId, jobId))
+      .orderBy(desc(planVersions.revision))
+      .limit(1)
+      .get()
+
+  const readLatestPlanVersion = (
+    tx: Transaction,
+    jobId: string,
+    planVersionId: string,
+  ): PlanRow => {
+    const row = readNewestPlan(tx, jobId)
+
+    if (row === undefined || row.id !== planVersionId) {
+      throw planVersionNotFound(planVersionId)
+    }
+
+    return row
+  }
+
+  const readActiveRunbook = (executor: Executor): RunbookVersionRow => {
+    const row = executor
+      .select()
+      .from(runbookVersions)
+      .orderBy(desc(runbookVersions.version))
+      .limit(1)
+      .get()
+
+    if (row === undefined) {
+      throw runbookVersionNotFound()
+    }
+
+    return row
+  }
+
+  /**
+   * Stopped and put back in the queue, in that order: suspending first means
+   * the move that follows reads a job that is already stopped, so it announces
+   * the stop once rather than twice and never offers the scheduler a startable
+   * job on its way past.
+   *
+   * Both halves are the point. `planning` is not a state the scheduler starts
+   * from, so a job left there once its pass has ended holds a slot that nothing
+   * is running in — and lifting the suspension later would give that slot to
+   * nobody rather than give it back.
+   */
+  const stopAndRequeue = (
+    tx: Transaction,
+    row: JobRow,
+    input: { body: string | null; reason: string; suspension: JobSuspension },
+    now: Date,
+    events: DomainEvent[],
+  ): Job => {
+    tx.update(jobs)
+      .set({ suspension: input.suspension, updatedAt: now })
+      .where(eq(jobs.id, row.id))
+      .run()
+
+    const rule = suspensionAttention[input.suspension]
+    if (rule !== undefined) {
+      raiseItem(
+        tx,
+        openItemsOfKinds(tx, row.id, [rule.kind]),
+        { body: input.body, jobId: row.id, rule },
+        now,
+        events,
+      )
+    }
+
+    return applyTransition(
+      tx,
+      { actor: 'system', jobId: row.id, reason: input.reason, to: 'queued' },
+      now,
+      events,
+    )
   }
 
   /**
@@ -791,11 +1063,16 @@ export function createStore(options: CreateStoreOptions): Store {
             .get()?.value ?? 0
         const revision = highest + 1
 
+        // Checked here as well as where it arrived, because this is the write
+        // that makes the column's promise: everything read back out of it is a
+        // plan, without the reader having to ask.
+        assertPlanContent(input.content)
+
         const row: PlanRow = {
           id: newId(),
           jobId: input.jobId,
           revision,
-          content: input.content,
+          content: JSON.stringify(input.content),
           feedback: null,
           approvalState: 'pending',
           approvedAt: null,
@@ -804,7 +1081,209 @@ export function createStore(options: CreateStoreOptions): Store {
 
         tx.insert(planVersions).values(row).run()
         events.push(jobChanged(toJob(job)))
-        return toPlanVersion(row)
+        // The content is already in hand and already checked, so it is handed
+        // back rather than serialised and parsed again to get where it was.
+        return { ...toPlanVersion(row), content: input.content }
+      })
+    },
+
+    approvePlan(input) {
+      return commit((tx, events, now) => {
+        readJob(tx, input.jobId)
+        const version = readLatestPlanVersion(
+          tx,
+          input.jobId,
+          input.planVersionId,
+        )
+
+        tx.update(planVersions)
+          .set({ approvalState: 'approved', approvedAt: now })
+          .where(eq(planVersions.id, version.id))
+          .run()
+
+        // The text is copied, not referenced: a job has to be able to say what
+        // it executed even after the Handler has rewritten settings. The id
+        // rides along so two jobs can still be recognised as having run the
+        // same procedure.
+        const runbook = readActiveRunbook(tx)
+        tx.insert(runbookSnapshots)
+          .values({
+            id: newId(),
+            jobId: input.jobId,
+            runbookVersionId: runbook.id,
+            content: runbook.content,
+            createdAt: now,
+          })
+          .run()
+
+        return applyTransition(
+          tx,
+          {
+            actor: 'handler',
+            expectedState: input.expectedState,
+            jobId: input.jobId,
+            reason: `Approved plan revision ${version.revision}`,
+            to: 'approved',
+          },
+          now,
+          events,
+        )
+      })
+    },
+
+    requestPlanChanges(input) {
+      return commit((tx, events, now) => {
+        const job = readJob(tx, input.jobId)
+        const version = readLatestPlanVersion(
+          tx,
+          input.jobId,
+          input.planVersionId,
+        )
+
+        // The revision is answered in the session that produced it, so the
+        // planner reads the feedback as the next turn rather than as a fresh
+        // brief. Refused here rather than left for the pass to discover,
+        // because the Handler is still on the page and can be told.
+        if (job.codexSessionId === null) {
+          throw codexSessionMissing(input.jobId)
+        }
+
+        tx.update(planVersions)
+          .set({ approvalState: 'changesRequested', feedback: input.feedback })
+          .where(eq(planVersions.id, version.id))
+          .run()
+
+        // Back to the queue rather than straight back into planning: the slot
+        // is the scheduler's to grant, and a job that walked into `planning`
+        // on its own would hold one with nothing running in it.
+        return applyTransition(
+          tx,
+          {
+            actor: 'handler',
+            expectedState: input.expectedState,
+            jobId: input.jobId,
+            reason: `Changes requested on plan revision ${version.revision}`,
+            to: 'queued',
+          },
+          now,
+          events,
+        )
+      })
+    },
+
+    createRunbookVersion(input) {
+      return commit((tx, _events, now) => {
+        const highest =
+          tx
+            .select({ value: max(runbookVersions.version) })
+            .from(runbookVersions)
+            .get()?.value ?? 0
+
+        const row: RunbookVersionRow = {
+          id: newId(),
+          version: highest + 1,
+          content: input.content,
+          createdAt: now,
+        }
+
+        tx.insert(runbookVersions).values(row).run()
+        return toRunbookVersion(row)
+      })
+    },
+
+    listRunbookVersions() {
+      return database
+        .select()
+        .from(runbookVersions)
+        .orderBy(desc(runbookVersions.version))
+        .all()
+        .map(toRunbookVersion)
+    },
+
+    activeRunbook() {
+      return toRunbookVersion(readActiveRunbook(database))
+    },
+
+    markInterrupted() {
+      return commit((tx, events, now) => {
+        const stranded = tx
+          .select()
+          .from(jobs)
+          .where(and(eq(jobs.state, 'planning'), isNull(jobs.suspension)))
+          .all()
+
+        return stranded.map((row) =>
+          stopAndRequeue(
+            tx,
+            row,
+            {
+              body: null,
+              reason: 'Interrupted by a restart',
+              suspension: 'interrupted',
+            },
+            now,
+            events,
+          ),
+        )
+      })
+    },
+
+    abandonPlanningPass(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        // The pass no longer speaks for this job: something else has moved it
+        // already, and wherever it moved it to is more current than this.
+        if (current.state !== 'planning') return toJob(current)
+
+        // A job the Handler stopped keeps their suspension and their reason —
+        // it was their stop that ended the pass, and overwriting it would
+        // report the consequence and lose the cause. It is re-queued on the
+        // same terms, because the slot is no less idle for the reason.
+        if (current.suspension !== null) {
+          return applyTransition(
+            tx,
+            {
+              actor: 'system',
+              jobId: input.jobId,
+              reason: 'Returned to the queue after a planning pass was stopped',
+              to: 'queued',
+            },
+            now,
+            events,
+          )
+        }
+
+        return stopAndRequeue(
+          tx,
+          current,
+          {
+            body: input.reason,
+            reason: 'Returned to the queue after a planning pass failed',
+            suspension: 'stoppedBySystem',
+          },
+          now,
+          events,
+        )
+      })
+    },
+
+    recordCodexSession(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        tx.update(jobs)
+          .set({ codexSessionId: input.sessionId, updatedAt: now })
+          .where(eq(jobs.id, input.jobId))
+          .run()
+
+        const job = toJob({
+          ...current,
+          codexSessionId: input.sessionId,
+          updatedAt: now,
+        })
+        events.push(jobChanged(job))
+        return job
       })
     },
 
@@ -1004,10 +1483,11 @@ export function createStore(options: CreateStoreOptions): Store {
     },
 
     /**
-     * Phase 4 owns Git, so until then the help on offer is what this
-     * installation has actually used. The default is reported on its own field
-     * and excluded in SQL rather than after the limit, so asking for ten
-     * suggestions never answers with nine.
+     * The fallback for a job with no repository chosen yet: what this
+     * installation has actually used, since there is no remote to ask. Intake
+     * prefers the remote's branches when it has one (`routes/intake.ts`). The
+     * default is reported on its own field and excluded in SQL rather than
+     * after the limit, so asking for ten suggestions never answers with nine.
      */
     listBaseBranchSuggestions(options) {
       const rows = database
@@ -1050,6 +1530,11 @@ export function createStore(options: CreateStoreOptions): Store {
       toPlanVersion,
     ),
 
+    latestPlanVersion(jobId) {
+      const row = readNewestPlan(database, jobId)
+      return row === undefined ? undefined : toPlanVersion(row)
+    },
+
     listRunbookSnapshots: listForJob(
       runbookSnapshots,
       asc(runbookSnapshots.createdAt),
@@ -1063,59 +1548,9 @@ export function createStore(options: CreateStoreOptions): Store {
     ),
 
     transitionJob(input) {
-      return commit((tx, events, now) => {
-        const current = readJob(tx, input.jobId)
-
-        if (
-          input.expectedState !== undefined &&
-          input.expectedState !== current.state
-        ) {
-          throw stateConflict(input.expectedState)
-        }
-
-        if (!canTransition(current.state, input.to)) {
-          throw illegalTransition(current.state, input.to)
-        }
-
-        // CONTEXT.md: the canonical branch is authoritative and a job cannot be
-        // dispatched without it. Detecting that the branch is already owned by
-        // an unknown job needs Git, and waits for Phase 4.
-        if (input.to === 'queued' && current.canonicalBranch === null) {
-          throw transitionGuardFailed(
-            'A job cannot be queued until Linear has provided its canonical branch name',
-          )
-        }
-
-        // Guarded so a move applies only to the state it was decided against.
-        const updated = tx
-          .update(jobs)
-          .set({ state: input.to, updatedAt: now })
-          .where(and(eq(jobs.id, input.jobId), eq(jobs.state, current.state)))
-          .run()
-
-        if (updated.changes === 0) {
-          throw stateConflict(current.state)
-        }
-
-        tx.insert(jobTransitions)
-          .values({
-            id: newId(),
-            jobId: input.jobId,
-            fromState: current.state,
-            toState: input.to,
-            actor: input.actor,
-            reason: input.reason ?? null,
-            occurredAt: now,
-          })
-          .run()
-
-        const next: JobRow = { ...current, state: input.to, updatedAt: now }
-        syncLifecycleAttention(tx, next, now, events)
-
-        const job = toJob(next)
-        events.push(jobChanged(job))
-        return job
-      })
+      return commit((tx, events, now) =>
+        applyTransition(tx, input, now, events),
+      )
     },
 
     suspendJob(input) {

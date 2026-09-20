@@ -1,42 +1,45 @@
-import type { Job } from '@handella/contracts'
+import type { Job, LinearIssueSummary, PlanContent } from '@handella/contracts'
 
 export interface PlanningRequest {
+  /**
+   * What the Handler asked to be changed, present only on a revision. It
+   * arrives with `sessionId`: together they are the turn being taken, not a
+   * fresh brief. The plan it answers is not passed, because it is already in
+   * the session the revision resumes.
+   */
+  feedback?: string | undefined
+  /**
+   * The issue as Linear holds it now, not as the job recorded it at intake.
+   * Read at the last moment for the reason Dispatch re-reads it: Linear is
+   * authoritative and the Handler may have rewritten the issue since.
+   */
+  issue: LinearIssueSummary
   job: Job
+  /** The procedure the plan will be executed by, so it can be planned against. */
+  runbook: string
+  /**
+   * The session to continue. Required whenever the job has one: a revision is
+   * answered in the conversation that produced what it answers.
+   */
+  sessionId?: string | undefined
+  /** Aborted on shutdown, on a stop, and when the pass outruns its timeout. */
+  signal: AbortSignal
   /** Codex runs read-only in here. The worktree exists before this is called. */
   worktreePath: string
 }
 
 export interface PlanningResult {
-  /** Opaque until Phase 5, which owns the structured plan's shape. */
-  content: string
+  content: PlanContent
+  /**
+   * The session this pass ran in, new or continued. Recorded against the job,
+   * because the next revision and Phase 6's implementation both resume it.
+   */
+  sessionId: string
 }
 
-/**
- * The read-only planning pass. Phase 5 replaces the body behind this; Phase 4
- * ships the seam and a stub, so the scheduler it feeds is exercised rather than
- * asserted.
- */
+/** The read-only planning pass, and the only thing Handella asks Codex to do. */
 export interface CodexAdapter {
   /** Whether a real Codex is behind this, so status can say so. */
   readonly configured: boolean
   plan(input: PlanningRequest): Promise<PlanningResult>
-}
-
-/**
- * What an installation without Phase 5 gets: a pass that does nothing and says
- * so. It completes rather than parking the job, because a slot that is claimed
- * and never released jams the scheduler after three dispatches and makes the
- * queue impossible to watch working.
- */
-export const stubCodexAdapter: CodexAdapter = {
-  configured: false,
-  plan: ({ job, worktreePath }) =>
-    Promise.resolve({
-      content: [
-        '# Placeholder plan',
-        '',
-        `Codex planning arrives in Phase 5. This job (${job.title}) has a`,
-        `worktree at ${worktreePath} and is waiting for a real planning pass.`,
-      ].join('\n'),
-    }),
 }

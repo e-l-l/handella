@@ -57,6 +57,12 @@ export const aLinearWorkflowState = (
 })
 
 export interface FakeLinearAdapter extends LinearAdapter {
+  /**
+   * The issues this Linear holds, mutable so a test can add one after the
+   * adapter is built. Dispatch and planning both read an issue back, and they
+   * have to be reading the same Linear the test set up.
+   */
+  readonly issues: LinearIssueSummary[]
   /** Every call the routes made, so a test can assert what was passed through. */
   readonly listCalls: ListAssignedIssuesInput[]
   readonly createCalls: CreateLinearIssueInput[]
@@ -94,6 +100,7 @@ export function createFakeLinearAdapter(
 
   return {
     configured: true,
+    issues,
     listCalls,
     createCalls,
     stateCalls,

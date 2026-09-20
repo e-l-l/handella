@@ -14,13 +14,13 @@ import { Chip } from '../components/Chip.tsx'
 import { Fact } from '../components/Fact.tsx'
 import { JobActions } from '../components/JobActions.tsx'
 import { JobStateBadge } from '../components/JobStateBadge.tsx'
+import { PlanReview } from '../components/PlanReview.tsx'
 import { Skeleton } from '../components/Skeleton.tsx'
 import { TransitionTimeline } from '../components/TransitionTimeline.tsx'
 import { WorkClassChip } from '../components/WorkClassChip.tsx'
 import {
   formatTimestamp,
   issueKeyLabel,
-  planApprovalStateLabels,
   sourceLabels,
   workClassLabels,
 } from '../labels.ts'
@@ -175,28 +175,8 @@ export function JobDetailPage() {
             <TransitionTimeline transitions={history} />
           </section>
 
-          <Card title="Plan versions">
-            {plans.length === 0 ? (
-              <p className="text-[13px] text-ink-3">
-                No plan has been captured for this job yet.
-              </p>
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {plans.map((version) => (
-                  <li
-                    className="flex items-center justify-between rounded-2xl bg-surface px-4 py-3 text-[13px]"
-                    key={version.id}
-                  >
-                    <span className="font-mono text-[12px] text-mint-soft">
-                      v{version.revision}
-                    </span>
-                    <span className="text-ink-3">
-                      {planApprovalStateLabels[version.approvalState]}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
+          <Card title="Plan">
+            <PlanReview job={job.data} versions={plans} />
           </Card>
         </div>
 

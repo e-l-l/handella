@@ -46,7 +46,7 @@ Success means reducing hands-on coordination time by at least 50%, measured acro
   - Dispatch blocks if Linear does not provide its canonical branch name or if that branch is already owned by an unknown job.
   - Create an isolated worktree from the latest selected remote base using Linear’s exact branch name.
 - Planning:
-  - Routine jobs run Codex read-only in the worktree and return a structured plan. You may approve it or send one change request; every revision is retained.
+  - Routine jobs run Codex read-only in the worktree and return a structured plan. You may approve it or send change requests until the plan is right; every revision is retained, and each one is answered in the same Codex session (ADR 0007).
   - Feature jobs launch a configured Terminal.app or iTerm conversation wrapper. The wrapper drives a resumable Codex session turn-by-turn, explicitly invokes `/grill-with-docs`, and imports the resulting structured plan.
   - Feature glossary and ADR edits are made in the feature worktree and included in the implementation PR.
   - Approving the imported feature plan resumes the same Codex session for implementation.

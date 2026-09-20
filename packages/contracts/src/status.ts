@@ -27,6 +27,10 @@ export const StatusResponseSchema = Type.Object(
           { configured: Type.Boolean() },
           { additionalProperties: false },
         ),
+        codex: Type.Object(
+          { configured: Type.Boolean() },
+          { additionalProperties: false },
+        ),
       },
       { additionalProperties: false },
     ),

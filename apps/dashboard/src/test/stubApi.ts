@@ -1,12 +1,14 @@
 import type {
   AttentionItem,
   Job,
+  PlanVersion,
   Repository,
+  RunbookVersion,
   StatusResponse,
 } from '@handella/contracts'
 import { vi } from 'vitest'
 
-import { aRepository, aStatus } from './fixtures.ts'
+import { aRepository, aRunbookVersion, aStatus } from './fixtures.ts'
 
 export const jsonResponse = (body: unknown, status = 200): Promise<Response> =>
   Promise.resolve(
@@ -19,7 +21,9 @@ export const jsonResponse = (body: unknown, status = 200): Promise<Response> =>
 export interface ApiRoutes {
   attention?: AttentionItem[] | undefined
   jobs?: Job[] | undefined
+  planVersions?: PlanVersion[] | undefined
   repositories?: Repository[] | undefined
+  runbookVersions?: RunbookVersion[] | undefined
   status?: StatusResponse | undefined
   /**
    * The arms one suite needs and the rest do not. Tried before the shared
@@ -62,9 +66,21 @@ export const stubApi = (routes: ApiRoutes = {}) => {
     if (url.startsWith('/api/repositories/') && method === 'DELETE')
       return jsonResponse(null, 204)
 
+    if (url === '/api/runbook-versions') {
+      if (method === 'POST')
+        return jsonResponse(
+          aRunbookVersion(
+            JSON.parse(String(init?.body)) as { content: string },
+          ),
+          201,
+        )
+      return jsonResponse(routes.runbookVersions ?? [aRunbookVersion()])
+    }
+
     if (url === '/api/jobs') return jsonResponse(routes.jobs ?? [])
     if (url.endsWith('/transitions')) return jsonResponse([])
-    if (url.endsWith('/plan-versions')) return jsonResponse([])
+    if (url.endsWith('/plan-versions'))
+      return jsonResponse(routes.planVersions ?? [])
     if (url.startsWith('/api/jobs/'))
       return jsonResponse((routes.jobs ?? [])[0])
 

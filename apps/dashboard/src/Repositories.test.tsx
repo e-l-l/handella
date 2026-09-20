@@ -43,10 +43,14 @@ describe('repository settings', () => {
     await userEvent.type(await screen.findByLabelText('Name'), 'acme')
     await userEvent.type(screen.getByLabelText('Path'), '../acme')
 
-    // Absolute because a worktree outlives the process that cut it.
+    // Absolute because a worktree outlives the process that cut it, and a
+    // disabled button that says nothing is indistinguishable from a broken one.
     expect(
       screen.getByRole('button', { name: 'Add repository' }),
     ).toBeDisabled()
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'This has to start with /',
+    )
   })
 
   it('adds one from an absolute path', async () => {

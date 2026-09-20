@@ -1,14 +1,18 @@
+import { availableSlots } from '@handella/contracts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { CodexAdapter } from '../src/adapters/codex.js'
-import { stubCodexAdapter } from '../src/adapters/codex.js'
 import { createScheduler } from '../src/domain/scheduler.js'
 import type { TestContext } from './helpers.js'
 import {
   aDispatchedQueue,
+  aFailingCodex,
+  aHeldCodex,
   aLinearIssueLink,
+  anAbortableCodex,
   aQueueableIssue,
   cleanupTestContexts,
+  createFakeCodexAdapter,
   createTestContext,
   testRepositoryId,
 } from './helpers.js'
@@ -17,29 +21,14 @@ afterEach(cleanupTestContexts)
 
 const aScheduler = (
   context: TestContext,
-  codex: CodexAdapter = stubCodexAdapter,
+  codex: CodexAdapter = createFakeCodexAdapter(),
 ) =>
   createScheduler({
     broadcaster: context.broadcaster,
     codex,
+    linear: context.linear,
     store: context.store,
   })
-
-/** A pass the test decides when to finish, for watching a slot while it is held. */
-const aHeldCodex = () => {
-  let release: () => void = () => {}
-  const held = new Promise<void>((resolve) => {
-    release = resolve
-  })
-  const codex: CodexAdapter = {
-    configured: false,
-    plan: async () => {
-      await held
-      return { content: 'planned' }
-    },
-  }
-  return { codex, release: () => release() }
-}
 
 describe('the three-slot ceiling', () => {
   it('starts no more than three jobs at once', async () => {
@@ -159,8 +148,9 @@ describe('what the scheduler will not start', () => {
 
   it('starts nothing at all when the queue is empty', async () => {
     const context = createTestContext()
-    const plan = vi.fn(stubCodexAdapter.plan)
-    const scheduler = aScheduler(context, { configured: false, plan })
+    const codex = createFakeCodexAdapter()
+    const plan = vi.fn(codex.plan)
+    const scheduler = aScheduler(context, { ...codex, plan })
 
     scheduler.start()
     await scheduler.whenIdle()
@@ -174,17 +164,8 @@ describe('when a planning pass fails', () => {
   it('gives the slot back rather than holding it forever', async () => {
     const context = createTestContext()
     const ids = await aDispatchedQueue(context, 2)
-    let first = true
-    const codex: CodexAdapter = {
-      configured: false,
-      plan: async () => {
-        if (first) {
-          first = false
-          throw new Error('codex fell over')
-        }
-        return { content: 'planned' }
-      },
-    }
+    const codex = createFakeCodexAdapter()
+    codex.failNextWith(new Error('codex fell over'))
     const scheduler = aScheduler(context, codex)
 
     scheduler.start()
@@ -192,22 +173,200 @@ describe('when a planning pass fails', () => {
     scheduler.stop()
 
     const failed = context.store.getJob(ids[0] ?? '')
+    // ADR 0003: the failure itself is the suspension and not a state of its
+    // own. The move is the slot being handed back rather than merely freed —
+    // `planning` is not a state the scheduler starts from, so a job left
+    // there would take a slot with it the moment it was resumed.
     expect(failed.suspension).toBe('stoppedBySystem')
-    // ADR 0003: the lifecycle state is untouched; only the suspension says so.
-    expect(failed.state).toBe('planning')
+    expect(failed.state).toBe('queued')
     expect(context.store.getJob(ids[1] ?? '').state).toBe('planReview')
   })
 })
 
-describe('the stub standing in for Phase 5', () => {
-  it('says what it is rather than pretending to have planned', async () => {
-    const result = await stubCodexAdapter.plan({
-      job: { title: 'Fix the flaky login test' } as never,
-      worktreePath: '/tmp/worktree',
+describe('what a planning pass is given', () => {
+  it('sends the worktree, the live issue and the runbook in force', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 1)
+    context.store.createRunbookVersion({ content: 'Run the suite' })
+    const codex = createFakeCodexAdapter()
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    const call = codex.calls[0]
+    expect(call?.job.id).toBe(ids[0])
+    expect(call?.worktreePath).toBe(
+      context.store.getJob(ids[0] ?? '').worktreePath,
+    )
+    expect(call?.runbook).toBe('Run the suite')
+    expect(call?.issue.identifier).toBeTruthy()
+    // Nothing to revise yet, so nothing to resume.
+    expect(call?.sessionId).toBeUndefined()
+    expect(call?.feedback).toBeUndefined()
+  })
+
+  it('records the session the pass ran in, so the next one can resume it', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 1)
+    const scheduler = aScheduler(
+      context,
+      createFakeCodexAdapter({ sessionId: 'session-abc' }),
+    )
+
+    scheduler.start()
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    expect(context.store.getJob(ids[0] ?? '').codexSessionId).toBe(
+      'session-abc',
+    )
+  })
+
+  it('stores the plan as a structured revision rather than text', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 1)
+    const scheduler = aScheduler(context)
+
+    scheduler.start()
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    const versions = context.store.listPlanVersions(ids[0] ?? '')
+    expect(versions).toHaveLength(1)
+    expect(versions[0]?.revision).toBe(1)
+    expect(versions[0]?.approvalState).toBe('pending')
+    expect(versions[0]?.content.steps[0]?.id).toBe('await-cookie')
+  })
+})
+
+describe('a change request', () => {
+  it('re-queues the job and revises in the same session', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 1)
+    const jobId = ids[0] ?? ''
+    const codex = createFakeCodexAdapter({ sessionId: 'session-abc' })
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+    await scheduler.whenIdle()
+
+    const first = context.store.listPlanVersions(jobId)[0]
+    context.store.requestPlanChanges({
+      feedback: 'Cover the signup test too',
+      jobId,
+      planVersionId: first?.id ?? '',
+    })
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    expect(codex.calls).toHaveLength(2)
+    expect(codex.calls[1]?.sessionId).toBe('session-abc')
+    expect(codex.calls[1]?.feedback).toBe('Cover the signup test too')
+    expect(context.store.listPlanVersions(jobId)).toHaveLength(2)
+    expect(context.store.getJob(jobId).state).toBe('planReview')
+  })
+})
+
+describe('stopping a pass', () => {
+  it('aborts the process when the Handler suspends the job', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 1)
+    const jobId = ids[0] ?? ''
+    const { codex, whenStarted } = anAbortableCodex()
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+    await whenStarted
+
+    context.store.suspendJob({ jobId, suspension: 'stoppedByHandler' })
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    // The Handler's reason survives: the abort is a consequence of the stop,
+    // not a second opinion about it. The job is still re-queued, because the
+    // slot is no less idle for the reason its pass ended.
+    expect(context.store.getJob(jobId)).toMatchObject({
+      state: 'queued',
+      suspension: 'stoppedByHandler',
+    })
+  })
+
+  it('aborts in-flight passes on shutdown and leaves them to the restart', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 1)
+    const jobId = ids[0] ?? ''
+    const { codex, whenStarted } = anAbortableCodex()
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+    await whenStarted
+    scheduler.stop()
+    await scheduler.whenIdle()
+
+    // Untouched: shutdown is not a fault, and markInterrupted is what knows
+    // the difference on the way back up.
+    expect(context.store.getJob(jobId)).toMatchObject({
+      state: 'planning',
+      suspension: null,
     })
 
-    expect(stubCodexAdapter.configured).toBe(false)
-    expect(result.content).toContain('Phase 5')
-    expect(result.content).toContain('/tmp/worktree')
+    expect(context.store.markInterrupted()).toHaveLength(1)
+    expect(context.store.getJob(jobId)).toMatchObject({
+      state: 'queued',
+      suspension: 'interrupted',
+    })
+  })
+
+  it('suspends a job whose pass simply failed', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 1)
+    const scheduler = aScheduler(context, aFailingCodex('codex fell over'))
+
+    scheduler.start()
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    expect(context.store.getJob(ids[0] ?? '').suspension).toBe(
+      'stoppedBySystem',
+    )
+  })
+
+  /**
+   * The failure worth naming: an installation without Codex fails all three
+   * passes, and the Handler's answer is to install it and press Resume. If a
+   * failed pass left its job in `planning`, resuming would hand it a slot that
+   * nothing is running in, and the third one would stop the scheduler dead.
+   */
+  it('gives every slot back when a failed pass is resumed', async () => {
+    const context = createTestContext()
+    const ids = await aDispatchedQueue(context, 3)
+    const failing = aFailingCodex('codex is not installed')
+    const working = createFakeCodexAdapter()
+    let codex = failing
+    const scheduler = aScheduler(context, {
+      get configured() {
+        return codex.configured
+      },
+      plan: (request) => codex.plan(request),
+    })
+
+    scheduler.start()
+    await scheduler.whenIdle()
+
+    // Codex arrives, and the Handler resumes what failed without it.
+    codex = working
+    for (const jobId of ids) context.store.resumeJob(jobId)
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    for (const jobId of ids) {
+      expect(context.store.getJob(jobId)).toMatchObject({
+        state: 'planReview',
+        suspension: null,
+      })
+    }
+    expect(availableSlots(context.store.listJobs())).toBe(3)
   })
 })

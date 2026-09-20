@@ -11,12 +11,19 @@ import { isOneOf } from './primitives.js'
  *
  * `prOpen -> implementing` is the bounded CI repair cycle (Phase 10);
  * `reviewing -> implementing` is accepted-review child-PR work (Phase 11).
+ *
+ * Both edges back to `queued` exist so a job that needs planning again goes
+ * through the scheduler rather than around it. A change request re-queues
+ * (Phase 5) and a restart re-queues what it interrupted; either way the slot
+ * is granted by `availableSlots` and never by whoever asked. There is
+ * deliberately no `planReview -> planning`: it would be a way into a state
+ * that holds a slot with nothing running in it.
  */
 export const jobStateTransitions: Record<JobState, readonly JobState[]> = {
   intake: ['queued', 'cancelled'],
   queued: ['planning', 'cancelled'],
-  planning: ['planReview', 'cancelled'],
-  planReview: ['planning', 'approved', 'cancelled'],
+  planning: ['planReview', 'queued', 'cancelled'],
+  planReview: ['queued', 'approved', 'cancelled'],
   approved: ['implementing', 'cancelled'],
   implementing: ['prOpen', 'cancelled'],
   prOpen: ['implementing', 'reviewing', 'merged', 'cancelled'],

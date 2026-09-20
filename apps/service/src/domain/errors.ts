@@ -213,3 +213,63 @@ export const worktreeCreationFailed = (
     `The worktree for ${branch} could not be created`,
     { cause },
   )
+
+/** Codex's own text travels as `cause`, on the same terms as git's. */
+export const codexUnavailable = (
+  message: string,
+  cause?: unknown,
+): DomainError => new DomainError('codex_unavailable', 502, message, { cause })
+
+/**
+ * The pass ran and did not produce a plan: Codex reported a failed turn, exited
+ * non-zero, or was stopped. Upstream rather than a bad request, which is what
+ * puts the job into `stoppedBySystem` instead of answering the Handler.
+ */
+export const codexPlanningFailed = (
+  message: string,
+  cause?: unknown,
+): DomainError =>
+  new DomainError('codex_planning_failed', 502, message, { cause })
+
+/**
+ * A job that has already planned must replan in the same session, so the
+ * revision is a turn in the conversation that produced the plan it answers.
+ * Without the id there is no such conversation to continue.
+ */
+export const codexSessionMissing = (jobId: string): DomainError =>
+  new DomainError(
+    'codex_session_missing',
+    409,
+    `Job ${jobId} has a plan but no Codex session to revise it in`,
+  )
+
+export const planVersionNotFound = (planVersionId: string): DomainError =>
+  new DomainError(
+    'plan_version_not_found',
+    404,
+    `No plan version with id ${planVersionId}`,
+  )
+
+/**
+ * Codex answered with something the plan schema rejects, despite having been
+ * given that schema. Upstream, not a bug here — the same class of failure as a
+ * non-zero exit, and it takes the same path.
+ */
+export const planContentInvalid = (
+  message: string,
+  cause?: unknown,
+): DomainError =>
+  new DomainError('plan_content_invalid', 502, message, { cause })
+
+/**
+ * Version 1 is seeded when a database is opened, so an installation with no
+ * Runbook has had one deleted underneath it. Approval refuses rather than
+ * snapshotting nothing: a job that cannot say what it will execute is not
+ * approved for implementation.
+ */
+export const runbookVersionNotFound = (): DomainError =>
+  new DomainError(
+    'runbook_version_not_found',
+    409,
+    'This installation has no runbook to snapshot',
+  )

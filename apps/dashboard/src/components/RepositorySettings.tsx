@@ -141,10 +141,21 @@ export function RepositorySettings() {
               value={draft.path}
             />
           </label>
-          {/* Absolute because a worktree outlives the process that cut it. */}
-          <span className="text-[12px] text-ink-5">
-            An absolute path to an existing checkout.
-          </span>
+          {/* Absolute because a worktree outlives the process that cut it.
+              The submit button is disabled until it is one, so the rule is
+              said out loud rather than left to be inferred from a button that
+              does nothing. */}
+          {draft.path !== '' && !draft.path.startsWith('/') ? (
+            <span className="text-[12px] text-amber-ink" role="alert">
+              This has to start with <code className="font-mono">/</code>.
+              Handella does not expand <code className="font-mono">~</code> or
+              resolve a relative path.
+            </span>
+          ) : (
+            <span className="text-[12px] text-ink-5">
+              An absolute path to an existing checkout.
+            </span>
+          )}
         </div>
 
         <label className="flex flex-col gap-2">

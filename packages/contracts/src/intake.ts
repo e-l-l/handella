@@ -57,9 +57,10 @@ export type CreateJobFromLinearIssue = Static<
  * one.
  *
  * There is no suggested work class. The masterplan files "AI proposes Feature
- * or Routine and you confirm or change it" under Dispatch, and the proposer is
- * the Codex adapter Phase 5 introduces; until then the Handler picks and
- * nothing pretends to have an opinion.
+ * or Routine and you confirm or change it" under Dispatch. Phase 5's Codex
+ * adapter plans a job that has already been classified and does not classify
+ * one, so the proposer is still unbuilt: the Handler picks, and nothing
+ * pretends to have an opinion.
  */
 export const CreateAdhocJobSchema = Type.Object(
   {
@@ -122,11 +123,10 @@ export const IntakeIssuePageSchema = Type.Object(
 export type IntakeIssuePage = Static<typeof IntakeIssuePageSchema>
 
 /**
- * Free text with help rather than a closed list. Phase 4 owns Git, so until
- * then `recent` is what this installation has actually used, newest first,
- * with the default left out because it is reported on its own field. Phase 4
- * replaces the body of this read with the remote's branches and leaves the
- * shape alone.
+ * Free text with help rather than a closed list. `recent` is the remote's
+ * branches once a repository has been chosen, and what this installation has
+ * actually used before that — newest first either way, with the default left
+ * out because it is reported on its own field.
  */
 export const BaseBranchSuggestionsSchema = Type.Object(
   {

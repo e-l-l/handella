@@ -7,6 +7,9 @@ import type {
   PlanVersion,
 } from '@handella/contracts'
 
+import { useQueryClient } from '@tanstack/react-query'
+
+import { attentionKeys } from './attention.ts'
 import { request } from './client.ts'
 
 export const jobKeys = {
@@ -14,6 +17,22 @@ export const jobKeys = {
   detail: (jobId: string) => ['jobs', jobId] as const,
   planVersions: (jobId: string) => ['jobs', jobId, 'plan-versions'] as const,
   transitions: (jobId: string) => ['jobs', jobId, 'transitions'] as const,
+}
+
+/**
+ * What to invalidate after anything that acts on a job. Moving, suspending or
+ * answering a plan also opens and resolves attention items, so both caches go
+ * stale together and every mutation on a job settles through this.
+ */
+export const useJobRefresh = (): (() => Promise<void>) => {
+  const queryClient = useQueryClient()
+
+  return async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: jobKeys.all }),
+      queryClient.invalidateQueries({ queryKey: attentionKeys.all }),
+    ])
+  }
 }
 
 export const fetchJobs = async (): Promise<Job[]> => request('/api/jobs')
@@ -59,3 +78,25 @@ export const dispatchJob = async (jobId: string): Promise<Job> =>
 
 export const reorderQueue = async (jobIds: string[]): Promise<Job[]> =>
   request('/api/queue/order', { body: { jobIds }, method: 'POST' })
+
+/**
+ * The revision is in the path rather than implied, so a page left open while
+ * the plan moved on answers the revision it was showing and is told no.
+ */
+export const approvePlan = async (
+  jobId: string,
+  planVersionId: string,
+): Promise<Job> =>
+  request(`/api/jobs/${jobId}/plan-versions/${planVersionId}/approve`, {
+    method: 'POST',
+  })
+
+export const requestPlanChanges = async (
+  jobId: string,
+  planVersionId: string,
+  feedback: string,
+): Promise<Job> =>
+  request(`/api/jobs/${jobId}/plan-versions/${planVersionId}/request-changes`, {
+    body: { feedback },
+    method: 'POST',
+  })

@@ -55,7 +55,11 @@ describe('job state machine', () => {
 
   it('accepts legal edges and rejects everything else', () => {
     expect(canTransition('intake', 'queued')).toBe(true)
-    expect(canTransition('planReview', 'planning')).toBe(true)
+    // Phase 5: a change request re-queues rather than walking straight back
+    // into planning, so the scheduler is what grants the slot.
+    expect(canTransition('planReview', 'queued')).toBe(true)
+    expect(canTransition('planning', 'queued')).toBe(true)
+    expect(canTransition('planReview', 'planning')).toBe(false)
     expect(canTransition('merged', 'archived')).toBe(true)
 
     expect(canTransition('intake', 'planning')).toBe(false)

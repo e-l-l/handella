@@ -5,6 +5,7 @@ import {
 } from '@fastify/type-provider-typebox'
 import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 
+import type { CodexAdapter } from './adapters/codex.js'
 import type { GitAdapter } from './adapters/git.js'
 import type { LinearAdapter } from './adapters/linear.js'
 import type { StatusSource } from './database/database.js'
@@ -17,10 +18,12 @@ import { repositoryRoutes } from './routes/repositories.js'
 import { eventRoutes } from './routes/events.js'
 import { intakeRoutes } from './routes/intake.js'
 import { jobRoutes } from './routes/jobs.js'
+import { runbookRoutes } from './routes/runbooks.js'
 import { statusRoutes } from './routes/status.js'
 
 interface BuildAppOptions {
   broadcaster: Broadcaster
+  codex: CodexAdapter
   dashboardPath?: string
   dispatcher: Dispatcher
   git: GitAdapter
@@ -77,6 +80,7 @@ export async function buildApp(options: BuildAppOptions) {
   })
 
   await app.register(statusRoutes, {
+    codex: options.codex,
     linear: options.linear,
     startedAt,
     statusSource: options.statusSource,
@@ -87,6 +91,7 @@ export async function buildApp(options: BuildAppOptions) {
     store: options.store,
   })
   await app.register(attentionRoutes, { store: options.store })
+  await app.register(runbookRoutes, { store: options.store })
   await app.register(repositoryRoutes, { store: options.store })
   await app.register(intakeRoutes, {
     git: options.git,

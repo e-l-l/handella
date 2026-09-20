@@ -524,7 +524,12 @@ export function IntakePage() {
         </div>
       </section>
 
-      <aside className="flex flex-col gap-[18px] border-line bg-deep px-[26px] pb-8 pt-[26px] min-[1200px]:border-l">
+      {/* Its own scroll, pinned under the 70px header: the issue list is as
+          long as Linear makes it, and a rail that stretched to match it put
+          the submit button a thousand pixels below the card it submits. Only
+          from 1200px, which is where the rail exists at all — below that it is
+          a section stacked under the list and scrolls with the page. */}
+      <aside className="flex flex-col gap-[18px] border-line bg-deep px-[26px] pb-8 pt-[26px] min-[1200px]:sticky min-[1200px]:top-[70px] min-[1200px]:max-h-[calc(100svh-70px)] min-[1200px]:self-start min-[1200px]:overflow-y-auto min-[1200px]:border-l">
         {/* Intake, not Dispatch: this panel commits the Job record and nothing
             else. Claiming the branch, cutting the worktree and taking a queue
             position are Dispatch's, and happen from the job page. */}
@@ -533,10 +538,23 @@ export function IntakePage() {
         {/* Chosen once for the panel rather than per issue: a base branch means
             nothing without the checkout it is on, and V1 manages one primary
             repository. */}
-        {repositories.data?.length === 0 ? (
+        {repositories.isPending ? (
+          <Skeleton className="h-[42px] rounded-full" />
+        ) : repositories.error !== null ? (
+          <p className="text-[13px] text-red-ink" role="alert">
+            {repositories.error.message}
+          </p>
+        ) : (repositories.data ?? []).length === 0 ? (
           <p className={amberBannerClass} role="alert">
-            No repository is configured, so nothing can be taken on yet. Add one
-            in <Link to="/system">System</Link>.
+            No repository is configured, so nothing can be taken on yet.{' '}
+            {/* The only way out of this state, so it is marked as one. */}
+            <Link
+              className="font-medium underline underline-offset-2"
+              to="/system"
+            >
+              Add one in System
+            </Link>
+            .
           </p>
         ) : (
           <label className="flex flex-col gap-2">
@@ -562,7 +580,7 @@ export function IntakePage() {
         ) : (
           <form
             aria-label="Create jobs"
-            className="flex flex-1 flex-col gap-6"
+            className="flex flex-col gap-6"
             onSubmit={(event) => {
               event.preventDefault()
               create.mutate()
@@ -578,7 +596,7 @@ export function IntakePage() {
               />
             ))}
 
-            <div className="mt-auto flex flex-col gap-2.5">
+            <div className="flex flex-col gap-2.5">
               <button
                 className={`w-full ${primaryButtonClass} py-3.5 text-[14px]`}
                 disabled={

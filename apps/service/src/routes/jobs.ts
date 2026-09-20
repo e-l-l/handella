@@ -4,6 +4,7 @@ import {
   JobSchema,
   JobTransitionSchema,
   PlanVersionSchema,
+  RequestPlanChangesSchema,
   QueueOrderRequestSchema,
   ReviewRoundSchema,
   RunbookSnapshotSchema,
@@ -19,6 +20,10 @@ import type { Dispatcher } from '../domain/dispatch.js'
 import type { Store } from '../domain/store.js'
 
 const JobIdParamsSchema = Type.Object({ jobId: Type.String() })
+const PlanVersionParamsSchema = Type.Object({
+  jobId: Type.String(),
+  planVersionId: Type.String(),
+})
 
 const errorResponses = {
   404: ApiErrorSchema,
@@ -147,6 +152,45 @@ export const jobRoutes: FastifyPluginCallbackTypebox<{
       },
     },
     async (request) => store.listReviewRounds(request.params.jobId),
+  )
+
+  /**
+   * The two answers a plan can get. Semantic rather than transitions, because
+   * each carries writes the move depends on: approval has a revision to mark
+   * and a runbook to freeze, a change request has feedback to record. The
+   * revision is in the path so a stale page cannot answer a plan the Handler
+   * never read — only the newest revision is accepted.
+   */
+  app.post(
+    '/api/jobs/:jobId/plan-versions/:planVersionId/approve',
+    {
+      schema: {
+        params: PlanVersionParamsSchema,
+        response: { 200: JobSchema, ...errorResponses },
+      },
+    },
+    async (request) =>
+      store.approvePlan({
+        jobId: request.params.jobId,
+        planVersionId: request.params.planVersionId,
+      }),
+  )
+
+  app.post(
+    '/api/jobs/:jobId/plan-versions/:planVersionId/request-changes',
+    {
+      schema: {
+        params: PlanVersionParamsSchema,
+        body: RequestPlanChangesSchema,
+        response: { 200: JobSchema, ...errorResponses },
+      },
+    },
+    async (request) =>
+      store.requestPlanChanges({
+        feedback: request.body.feedback,
+        jobId: request.params.jobId,
+        planVersionId: request.params.planVersionId,
+      }),
   )
 
   /**

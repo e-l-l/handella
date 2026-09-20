@@ -4,6 +4,7 @@ import { fetchSystemStatus, statusKeys } from '../api/status.ts'
 import { Dot } from '../components/Chip.tsx'
 import { Fact } from '../components/Fact.tsx'
 import { RepositorySettings } from '../components/RepositorySettings.tsx'
+import { RunbookSettings } from '../components/RunbookSettings.tsx'
 import { SkeletonList } from '../components/Skeleton.tsx'
 import { databaseStatusLabels, formatTimestamp } from '../labels.ts'
 import {
@@ -165,6 +166,10 @@ export function SystemStatusPage() {
 
       <div className="mt-6">
         <RepositorySettings />
+      </div>
+
+      <div className="mt-6">
+        <RunbookSettings />
       </div>
 
       <footer className="mt-8 flex flex-col justify-between gap-3 border-t border-line pt-5 text-[12px] text-ink-5 sm:flex-row">

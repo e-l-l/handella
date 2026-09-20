@@ -81,13 +81,33 @@ it is resolved rather than deleted.
 _Avoid_: Notification, alert, todo
 
 **Plan Version**:
-One revision of the structured plan proposed for a Job. Every revision is kept.
+One revision of the structured plan proposed for a Job: what this Job in
+particular will change, and how anyone could tell it worked. Every revision is
+kept, and there may be any number of them, because the Handler may ask for
+changes as often as the plan needs them. Only the newest can be answered.
 _Avoid_: Draft, proposal
+
+**Runbook**:
+The procedure every Job's implementation follows, whatever the Job is: commit,
+test, open the pull request. The Handler writes it and Handella never does. It
+is what the Plan is not — the Plan is this Job's work, the Runbook is the way
+all work is done here — and the two are read together, so a Plan is written
+knowing the Runbook that will carry it out. Versions are added, never edited:
+Jobs have approved against what it said.
+_Avoid_: Checklist, template, playbook, process
 
 **Runbook Snapshot**:
 The immutable copy of the Runbook a Job will execute, taken when its plan is
-approved.
+approved. It holds the text and not merely a reference to a version, so a Job
+can still say what it ran after the Handler has rewritten everything since.
 _Avoid_: Checklist, template
+
+**Codex Session**:
+The conversation a Job's planning and implementation happen inside, kept so
+Handella can return to it. A revision is a turn in the session that produced
+the plan it revises, rather than a fresh briefing, and Phase 6 implements in
+the session that planned.
+_Avoid_: Thread, run, context
 
 **Review Round**:
 One pass of review comments on a Job's pull request, together with Handella's

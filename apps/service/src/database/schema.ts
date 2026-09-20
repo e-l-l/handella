@@ -216,7 +216,11 @@ export const attentionItems = sqliteTable(
   ],
 )
 
-/** `content` holds the structured plan verbatim; Phase 5 owns its inner shape. */
+/**
+ * `content` holds the structured plan as JSON text. The shape is
+ * `PlanContentSchema`, and the store validates against it on the way in, so
+ * this column cannot hold something the contract says it does not.
+ */
 export const planVersions = sqliteTable(
   'plan_versions',
   {
@@ -247,9 +251,30 @@ export const planVersions = sqliteTable(
 )
 
 /**
+ * The Runbook the Handler maintains, one row per version. Append-only: nothing
+ * updates a row, because jobs have approved against what it said. The active
+ * version is the highest, so a rollback is the old text saved again.
+ */
+export const runbookVersions = sqliteTable(
+  'runbook_versions',
+  {
+    id: text('id').primaryKey(),
+    version: integer('version').notNull(),
+    content: text('content').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    check('runbook_versions_version_check', sql`${table.version} >= 1`),
+    uniqueIndex('runbook_versions_version_unique').on(table.version),
+  ],
+)
+
+/**
  * Immutable: nothing updates a snapshot, and re-approving a plan takes another
- * one. `content` is the runbook verbatim, on the same terms as
- * `plan_versions.content` — Phase 5 owns its inner shape.
+ * one. `content` is the runbook verbatim rather than only a reference, so a
+ * job can still say what it ran after the version it came from is rewritten;
+ * `runbook_version_id` is kept alongside so two jobs can be recognised as
+ * having executed the same procedure.
  */
 export const runbookSnapshots = sqliteTable(
   'runbook_snapshots',
@@ -258,6 +283,9 @@ export const runbookSnapshots = sqliteTable(
     jobId: text('job_id')
       .notNull()
       .references(() => jobs.id, { onDelete: 'cascade' }),
+    runbookVersionId: text('runbook_version_id')
+      .notNull()
+      .references(() => runbookVersions.id),
     content: text('content').notNull(),
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
   },

@@ -1,13 +1,12 @@
 import { legalTransitionsFrom, type Job } from '@handella/contracts'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 
-import { attentionKeys } from '../api/attention.ts'
 import {
   dispatchJob,
-  jobKeys,
   resumeJob,
   suspendJob,
   transitionJob,
+  useJobRefresh,
 } from '../api/jobs.ts'
 import { stateLabels } from '../labels.ts'
 import { secondaryButtonClass } from '../styles.ts'
@@ -23,15 +22,7 @@ import { secondaryButtonClass } from '../styles.ts'
  * branch and cut no worktree.
  */
 export function JobActions({ job }: { job: Job }) {
-  const queryClient = useQueryClient()
-  // Moving or suspending a job also opens and resolves attention items, so both
-  // caches go stale together.
-  const refresh = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: jobKeys.all }),
-      queryClient.invalidateQueries({ queryKey: attentionKeys.all }),
-    ])
-  }
+  const refresh = useJobRefresh()
 
   const move = useMutation({
     mutationFn: (to: Job['state']) => transitionJob(job.id, to),
