@@ -567,3 +567,139 @@ describe('the jobs page', () => {
     expect(link).toHaveAttribute('href', '/intake')
   })
 })
+
+/**
+ * Intake is the one screen whose state is held above the router. Everything
+ * here is about what survives leaving it, and what that saves the local
+ * service: every issue list it rebuilds is a round trip to Linear per issue.
+ */
+describe('coming back to intake', () => {
+  const issueRequests = (fetchMock: ReturnType<typeof stubApi>) =>
+    fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .filter((url) => url.startsWith('/api/intake/linear/issues'))
+
+  const leaveAndReturn = async () => {
+    await userEvent.click(screen.getByRole('link', { name: 'Jobs' }))
+    await userEvent.click(await screen.findByRole('link', { name: 'Intake' }))
+  }
+
+  it('keeps the filters, and asks for no list it already has', async () => {
+    const fetchMock = stubApi({
+      states: [{ id: 'state-2', name: 'In Dev (QA)', type: 'started' }],
+    })
+    renderAt('/intake')
+
+    await screen.findByRole('option', { name: 'ENG · Engineering' })
+    await userEvent.selectOptions(
+      screen.getByLabelText('Linear team'),
+      'team-1',
+    )
+    await screen.findByRole('option', { name: 'In Dev (QA)' })
+    await userEvent.selectOptions(
+      screen.getByLabelText('Linear state'),
+      'state-2',
+    )
+    await waitFor(() => {
+      expect(issueRequests(fetchMock).at(-1)).toContain('stateId=state-2')
+    })
+    const asked = issueRequests(fetchMock).length
+
+    await leaveAndReturn()
+
+    expect(await screen.findByLabelText('Linear team')).toHaveValue('team-1')
+    expect(screen.getByLabelText('Linear state')).toHaveValue('state-2')
+    // The filters are what the key is made of, so keeping them is what keeps
+    // the list: a reset would have asked Linear for the unfiltered one.
+    expect(issueRequests(fetchMock)).toHaveLength(asked)
+  })
+
+  it('keeps the Selection, with the choices made for each issue', async () => {
+    stubApi({
+      issues: [
+        anIssue(),
+        anIssue({
+          id: 'issue-500',
+          identifier: 'ENG-500',
+          title: 'Retire the legacy exporter',
+          branchName: 'ell/eng-500-retire-the-legacy-exporter',
+        }),
+      ],
+    })
+    renderAt('/intake')
+
+    await userEvent.click(await screen.findByLabelText('Select ENG-412'))
+    await userEvent.click(screen.getByLabelText('Select ENG-500'))
+    await userEvent.click(
+      within(
+        screen.getByRole('group', { name: 'Work class for ENG-500' }),
+      ).getByRole('radio', { name: 'Feature' }),
+    )
+    await userEvent.clear(screen.getByLabelText('Base branch for ENG-500'))
+    await userEvent.type(
+      screen.getByLabelText('Base branch for ENG-500'),
+      'main',
+    )
+
+    await leaveAndReturn()
+
+    expect(
+      await screen.findByRole('button', { name: 'Create 2 jobs' }),
+    ).toBeEnabled()
+    expect(screen.getByLabelText('Base branch for ENG-500')).toHaveValue('main')
+    expect(
+      within(
+        screen.getByRole('group', { name: 'Work class for ENG-500' }),
+      ).getByRole('radio', { name: 'Feature' }),
+    ).toBeChecked()
+  })
+
+  it('refreshes when the Handler asks, rather than on sight', async () => {
+    // Read per request by the stub, so mutating it is the list changing
+    // underneath a Handler who has already chosen from it.
+    const offers = [anOffer()]
+    const fetchMock = stubApi({ offers })
+    renderAt('/intake')
+
+    await userEvent.click(await screen.findByLabelText('Select ENG-412'))
+    const asked = issueRequests(fetchMock).length
+
+    offers[0] = anOffer({
+      heldByJobId: '123e4567-e89b-42d3-a456-426614174000',
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    await screen.findByText(
+      'A live job already holds this issue, and its canonical branch with it.',
+    )
+    expect(issueRequests(fetchMock)).toHaveLength(asked + 1)
+    // Still selected, and refused: a Selection is not silently emptied by the
+    // list moving under it.
+    expect(screen.getByRole('button', { name: 'Create job' })).toBeDisabled()
+  })
+
+  it('lets a selection go once its issue has left the list', async () => {
+    const offers = [anOffer()]
+    stubApi({ offers })
+    renderAt('/intake')
+
+    await userEvent.click(await screen.findByLabelText('Select ENG-412'))
+    offers.length = 0
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+
+    // One blocked selection blocks the batch, and the row that would untick
+    // this one is no longer on the screen, so the card has to carry the way
+    // out or there is none short of a reload.
+    await userEvent.click(
+      await screen.findByRole('button', {
+        name: 'Remove this issue from the Selection',
+      }),
+    )
+
+    expect(
+      screen.getByText(
+        'Pick an issue to classify it and give it a base branch.',
+      ),
+    ).toBeInTheDocument()
+  })
+})

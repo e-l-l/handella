@@ -1,8 +1,9 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient } from '@tanstack/react-query'
 import { render } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 
 import App from '../App.tsx'
+import { AppProviders } from '../AppProviders.tsx'
 
 /** One shell for every test, so provider nesting and query defaults live once. */
 export const renderAt = (path: string) => {
@@ -10,10 +11,10 @@ export const renderAt = (path: string) => {
     defaultOptions: { queries: { retry: false } },
   })
   return render(
-    <QueryClientProvider client={queryClient}>
+    <AppProviders queryClient={queryClient}>
       <MemoryRouter initialEntries={[path]}>
         <App />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </AppProviders>,
   )
 }

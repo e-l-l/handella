@@ -27,13 +27,19 @@ export function useEventStream(): void {
       'attention.changed': attentionKeys.all,
     }
 
-    // Anything missed while disconnected is repaired by a full refetch, which
-    // is why the stream needs no replay. The first `open` is the connection
-    // this effect just made, and the pages have already fetched through it.
+    // Anything missed while disconnected is repaired by refetching what the
+    // stream carries, which is why it needs no replay. Only these two things
+    // are ever announced, so only these two can have been missed: invalidating
+    // everything would also discard the intake lists, which no event can
+    // change and which cost the local service a round trip to Linear per
+    // issue to rebuild. The first `open` is the connection this effect just
+    // made, and the pages have already fetched through it.
     let connected = false
     source.addEventListener('open', () => {
       if (connected) {
-        void queryClient.invalidateQueries()
+        for (const queryKey of Object.values(invalidations)) {
+          void queryClient.invalidateQueries({ queryKey })
+        }
       }
       connected = true
     })

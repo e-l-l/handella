@@ -8,7 +8,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 
-import { createAdhocJob, fetchLinearTeams, intakeKeys } from '../api/intake.ts'
+import { createAdhocJob, teamsOptions } from '../api/intake.ts'
 import { jobKeys } from '../api/jobs.ts'
 import { linearPriorityLabels } from '../labels.ts'
 import {
@@ -74,10 +74,7 @@ export function AdhocIssueForm({
 }) {
   const [draft, setDraft] = useState(emptyDraft)
   const queryClient = useQueryClient()
-  const teams = useQuery({
-    queryKey: intakeKeys.teams,
-    queryFn: fetchLinearTeams,
-  })
+  const teams = useQuery(teamsOptions)
 
   // Which team is preselected is decided once: the submitted team and the
   // displayed team cannot be two different answers to the same question.

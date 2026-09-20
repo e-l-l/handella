@@ -1,9 +1,4 @@
-import {
-  defaultBaseBranch,
-  type IntakeChoices,
-  type IntakeIssue,
-  type LinearIssueQuery,
-} from '@handella/contracts'
+import { type IntakeIssue, type LinearIssueQuery } from '@handella/contracts'
 import {
   useInfiniteQuery,
   useMutation,
@@ -16,13 +11,13 @@ import { Link } from 'react-router'
 import { ApiRequestError } from '../api/client.ts'
 import {
   createJobFromLinearIssue,
-  fetchIntakeIssues,
-  fetchLinearTeamWorkflowStates,
-  fetchLinearTeams,
   intakeKeys,
+  issuesOptions,
+  teamStatesOptions,
+  teamsOptions,
 } from '../api/intake.ts'
 import { jobKeys } from '../api/jobs.ts'
-import { fetchRepositories, repositoryKeys } from '../api/repositories.ts'
+import { repositoriesOptions } from '../api/repositories.ts'
 import { fetchSystemStatus, statusKeys } from '../api/status.ts'
 import { AdhocIssueForm } from '../components/AdhocIssueForm.tsx'
 import { BaseBranchField } from '../components/BaseBranchField.tsx'
@@ -31,6 +26,7 @@ import { LinearIssueRow } from '../components/LinearIssueRow.tsx'
 import { Skeleton, SkeletonList } from '../components/Skeleton.tsx'
 import { WorkClassField } from '../components/WorkClassField.tsx'
 import { linearPriorityLabels } from '../labels.ts'
+import { type IssueChoices, useIntakeState } from '../state/intake.ts'
 import {
   amberBannerClass,
   cardClass,
@@ -47,14 +43,6 @@ import {
 } from '../styles.ts'
 
 type Outcome = { kind: 'created' } | { kind: 'failed'; message: string }
-
-/**
- * What the Handler chooses per issue. The repository is not here: it is chosen
- * once for the whole panel, because masterplan.md:97 has V1 managing one
- * primary repository and a batch split across checkouts is not a thing Intake
- * is for.
- */
-type IssueChoices = Omit<IntakeChoices, 'repositoryId'>
 
 /**
  * A page of issues costs the local service one request per issue to resolve
@@ -119,7 +107,7 @@ function SetupNotice() {
  */
 const blockedReason = (offer: IntakeIssue | undefined): string | null => {
   if (offer === undefined)
-    return 'Linear has not named a branch for this issue in the current list, so Handella cannot claim one. Clear the filters and select it again.'
+    return 'Linear has not named a branch for this issue in the current list, so Handella cannot claim one. Restore the filters it was selected under, or remove it.'
   if (offer.heldByJobId !== null)
     return 'A live job already holds this issue, and its canonical branch with it.'
   return null
@@ -134,11 +122,13 @@ function IntakeCard({
   choices,
   offer,
   onChange,
+  onRemove,
   repositoryId,
 }: {
   choices: IssueChoices
   offer: IntakeIssue | undefined
   onChange: (patch: Partial<IssueChoices>) => void
+  onRemove: () => void
   repositoryId: string
 }) {
   const label = offer?.issue.identifier ?? 'this issue'
@@ -147,7 +137,20 @@ function IntakeCard({
   return (
     <div className="flex flex-col gap-4">
       <div className={`flex flex-col gap-2 ${softCardClass}`}>
-        <p className="font-mono text-[11.5px] text-ink-5">{label}</p>
+        <div className="flex items-start justify-between gap-3">
+          <p className="font-mono text-[11.5px] text-ink-5">{label}</p>
+          {/* The Selection outlives the list it was made from, so the row that
+              would untick this issue may not be on the screen at all. This is
+              the way out that does not go through restoring the filters. */}
+          <button
+            aria-label={`Remove ${label} from the Selection`}
+            className="-my-1 flex-none rounded-full px-2 py-1 text-[12px] text-ink-5 hover:bg-raised-alt hover:text-ink-2"
+            onClick={onRemove}
+            type="button"
+          >
+            Remove
+          </button>
+        </div>
         <p className="text-[15px] font-[550] leading-[1.4]">
           {offer?.issue.title ?? 'Selected issue'}
         </p>
@@ -207,11 +210,19 @@ function IntakeCard({
 }
 
 export function IntakePage() {
-  const [searchInput, setSearchInput] = useState('')
-  const [teamId, setTeamId] = useState('')
-  const [stateId, setStateId] = useState('')
-  const [selections, setSelections] = useState<Record<string, IssueChoices>>({})
-  const [repositoryId, setRepositoryId] = useState('')
+  // Held above the router, so a trip to another screen no longer discards the
+  // Selection or resets the filters under the query key.
+  const {
+    amend,
+    drop,
+    filters: { repositoryId, searchInput, stateId, teamId },
+    selections,
+    setRepositoryId,
+    setSearchInput,
+    setStateId,
+    setTeamId,
+    toggle,
+  } = useIntakeState()
   const queryClient = useQueryClient()
 
   const search = useDebounced(searchInput)
@@ -222,10 +233,7 @@ export function IntakePage() {
   const configured = status.data?.integrations.linear.configured ?? false
 
   // Local, so it answers whether or not Linear is set up.
-  const repositories = useQuery({
-    queryKey: repositoryKeys.all,
-    queryFn: fetchRepositories,
-  })
+  const repositories = useQuery(repositoriesOptions)
 
   // The first repository is the primary one until the Handler says otherwise.
   // Resolved on read rather than in an effect, so the first render already has
@@ -235,18 +243,13 @@ export function IntakePage() {
 
   // Shared with the ad hoc form's query, which asks for the same teams under
   // the same key, so opening intake fetches them once.
-  const teams = useQuery({
-    queryKey: intakeKeys.teams,
-    queryFn: fetchLinearTeams,
-    enabled: configured,
-  })
+  const teams = useQuery({ ...teamsOptions, enabled: configured })
 
   // Workflow states belong to a team rather than to the workspace, and their
   // names repeat across teams, so there is no state to offer until the Handler
   // has said which team's workflow they mean.
   const states = useQuery({
-    queryKey: intakeKeys.teamStates(teamId),
-    queryFn: () => fetchLinearTeamWorkflowStates(teamId),
+    ...teamStatesOptions(teamId),
     enabled: configured && teamId !== '',
   })
 
@@ -256,20 +259,8 @@ export function IntakePage() {
     ...(stateId === '' ? {} : { stateId }),
   }
 
-  /**
-   * Linear pages its issues, so this one does too: the cursor the service
-   * reported is what asks for the next page, and pages accumulate under the
-   * key for these filters rather than replacing each other.
-   */
   const issues = useInfiniteQuery({
-    queryKey: intakeKeys.issues(query),
-    queryFn: ({ pageParam }) =>
-      fetchIntakeIssues({
-        ...query,
-        ...(pageParam === undefined ? {} : { cursor: pageParam }),
-      }),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    ...issuesOptions(query),
     enabled: configured,
   })
 
@@ -287,26 +278,17 @@ export function IntakePage() {
     [offers],
   )
 
-  const toggle = (issueId: string) => {
-    setSelections((current) => {
-      if (issueId in current) {
-        return Object.fromEntries(
-          Object.entries(current).filter(([id]) => id !== issueId),
-        )
-      }
-      return {
-        ...current,
-        [issueId]: { baseBranch: defaultBaseBranch, workClass: 'routine' },
-      }
-    })
-  }
-
-  const amend = (issueId: string, patch: Partial<IssueChoices>) => {
-    setSelections((current) => {
-      const existing = current[issueId]
-      if (existing === undefined) return current
-      return { ...current, [issueId]: { ...existing, ...patch } }
-    })
+  /**
+   * Back to a first page rather than a refetch of every page loaded so far:
+   * `refetch` on an infinite query asks for all of them, and each one costs
+   * the local service a round trip to Linear per issue. The teams and their
+   * workflow states are Linear's own configuration and cached for far longer
+   * than the list, so this is also the moment to read them again — it is the
+   * only one the Handler has to ask with.
+   */
+  const refresh = () => {
+    void queryClient.resetQueries({ queryKey: intakeKeys.issues(query) })
+    void queryClient.invalidateQueries({ queryKey: intakeKeys.teams })
   }
 
   /**
@@ -346,12 +328,10 @@ export function IntakePage() {
       )
     },
     onSuccess: async (results) => {
-      setSelections((current) =>
-        Object.fromEntries(
-          Object.entries(current).filter(
-            ([issueId]) => results[issueId]?.kind !== 'created',
-          ),
-        ),
+      drop(
+        Object.entries(results)
+          .filter(([, outcome]) => outcome.kind === 'created')
+          .map(([issueId]) => issueId),
       )
       // Only what taking a job changes: the teams and workflow states under
       // `intakeKeys.all` are Linear's own and cannot have moved, and
@@ -420,12 +400,7 @@ export function IntakePage() {
             <span className="sr-only">Linear team</span>
             <select
               className={pillFieldClass}
-              onChange={(event) => {
-                // The chosen state belongs to the team it was chosen from, so
-                // it cannot outlive a change of team.
-                setTeamId(event.target.value)
-                setStateId('')
-              }}
+              onChange={(event) => setTeamId(event.target.value)}
               value={teamId}
             >
               <option value="">All teams</option>
@@ -455,6 +430,18 @@ export function IntakePage() {
               ))}
             </select>
           </label>
+
+          {/* The list is kept for two minutes rather than revalidated on sight,
+              because one refresh of it costs the local service a round trip to
+              Linear per issue. This is how the Handler asks for one anyway. */}
+          <button
+            className={`${secondaryButtonClass} ml-auto`}
+            disabled={issues.isFetching}
+            onClick={refresh}
+            type="button"
+          >
+            {issues.isFetching ? 'Refreshing…' : 'Refresh'}
+          </button>
         </div>
 
         {issues.isPending ? (
@@ -592,6 +579,7 @@ export function IntakePage() {
                 key={issueId}
                 offer={byIssueId.get(issueId)}
                 onChange={(patch) => amend(issueId, patch)}
+                onRemove={() => toggle(issueId)}
                 repositoryId={chosenRepositoryId}
               />
             ))}

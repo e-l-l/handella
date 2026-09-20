@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useId } from 'react'
 
-import { fetchBaseBranches, intakeKeys } from '../api/intake.ts'
+import { baseBranchesOptions } from '../api/intake.ts'
 import { labelClass, monoFieldClass } from '../styles.ts'
 
 /**
@@ -25,10 +25,7 @@ export function BaseBranchField({
   value: string
 }) {
   const listId = useId()
-  const suggestions = useQuery({
-    queryKey: intakeKeys.baseBranches(repositoryId),
-    queryFn: () => fetchBaseBranches(repositoryId),
-  })
+  const suggestions = useQuery(baseBranchesOptions(repositoryId))
 
   const options =
     suggestions.data === undefined

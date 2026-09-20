@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url'
 
 import { unconfiguredLinearAdapter } from './adapters/linear.js'
 import { createCodexAdapter } from './adapters/codex-cli.js'
+import { unavailableFolderPicker } from './adapters/folders.js'
+import { createFolderPicker } from './adapters/folders-macos.js'
 import { createGitAdapter } from './adapters/git-cli.js'
 import { buildApp } from './app.js'
 import { createDispatcher } from './domain/dispatch.js'
@@ -60,6 +62,12 @@ async function main(): Promise<void> {
   })
 
   const codex = createCodexAdapter()
+  // The dialog is AppleScript, so anywhere else the Handler types the path
+  // and is told so, rather than being told osascript is missing.
+  const folders =
+    process.platform === 'darwin'
+      ? createFolderPicker()
+      : unavailableFolderPicker
 
   // Nothing this process started is still running, so anything the database
   // still calls planning was cut off mid-pass. Done before the app is built,
@@ -70,6 +78,7 @@ async function main(): Promise<void> {
     broadcaster,
     codex,
     dispatcher,
+    folders,
     git,
     linear,
     store,

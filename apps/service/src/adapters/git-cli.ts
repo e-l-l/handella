@@ -4,17 +4,10 @@ import { dirname } from 'node:path'
 import { promisify } from 'node:util'
 
 import { gitUnavailable, worktreeCreationFailed } from '../domain/errors.js'
+import { isMissingCommand, stderrOf } from './command.js'
 import type { AddWorktreeInput, GitAdapter } from './git.js'
 
 const run = promisify(execFile)
-
-interface CommandFailure {
-  code?: string
-  stderr?: string
-}
-
-const stderrOf = (error: unknown): string =>
-  ((error as CommandFailure).stderr ?? '').trim()
 
 // Git's own text is the only thing that makes a failure diagnosable, and a
 // localised message is not something error mapping can read. Built once: it is
@@ -32,7 +25,7 @@ const git = async (
   try {
     return await run('git', [...args], { cwd, env: gitEnv })
   } catch (error) {
-    if ((error as CommandFailure).code === 'ENOENT') {
+    if (isMissingCommand(error)) {
       throw gitUnavailable('git is not installed or is not on PATH', error)
     }
     throw gitUnavailable(

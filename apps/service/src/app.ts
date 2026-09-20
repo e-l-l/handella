@@ -6,10 +6,11 @@ import {
 import Fastify, { type FastifyError, type FastifyServerOptions } from 'fastify'
 
 import type { CodexAdapter } from './adapters/codex.js'
+import type { FolderPicker } from './adapters/folders.js'
 import type { GitAdapter } from './adapters/git.js'
 import type { LinearAdapter } from './adapters/linear.js'
 import type { StatusSource } from './database/database.js'
-import { DomainError } from './domain/errors.js'
+import { crossOriginRefused, DomainError } from './domain/errors.js'
 import type { Dispatcher } from './domain/dispatch.js'
 import type { Store } from './domain/store.js'
 import type { Broadcaster } from './events/broadcaster.js'
@@ -26,6 +27,7 @@ interface BuildAppOptions {
   codex: CodexAdapter
   dashboardPath?: string
   dispatcher: Dispatcher
+  folders: FolderPicker
   git: GitAdapter
   linear: LinearAdapter
   logger?: FastifyServerOptions['logger']
@@ -79,6 +81,32 @@ export async function buildApp(options: BuildAppOptions) {
       .send({ code: 'internal_error', message: 'Internal Server Error' })
   })
 
+  /**
+   * Nothing but the dashboard may reach the API. The service is loopback-only
+   * and unauthenticated, which makes any page the Handler happens to visit a
+   * caller: a cross-origin request carrying no body and no custom headers is a
+   * CORS simple request, so it is sent with no preflight and its side effect
+   * lands even though the response is withheld from whoever asked. A method is
+   * no defence against that; the origin is.
+   *
+   * `Sec-Fetch-Site` is the browser's own account of where a request came from
+   * and script cannot set it. It is absent for the Vite dev proxy and for the
+   * tests, neither of which is a browser, and `none` is the Handler typing the
+   * URL. Only `/api` is guarded, so a link to the dashboard from anywhere else
+   * still opens it.
+   */
+  app.addHook('onRequest', async (request) => {
+    const site = request.headers['sec-fetch-site']
+    if (
+      request.url.startsWith('/api/') &&
+      site !== undefined &&
+      site !== 'same-origin' &&
+      site !== 'none'
+    ) {
+      throw crossOriginRefused()
+    }
+  })
+
   await app.register(statusRoutes, {
     codex: options.codex,
     linear: options.linear,
@@ -92,7 +120,10 @@ export async function buildApp(options: BuildAppOptions) {
   })
   await app.register(attentionRoutes, { store: options.store })
   await app.register(runbookRoutes, { store: options.store })
-  await app.register(repositoryRoutes, { store: options.store })
+  await app.register(repositoryRoutes, {
+    folders: options.folders,
+    store: options.store,
+  })
   await app.register(intakeRoutes, {
     git: options.git,
     linear: options.linear,

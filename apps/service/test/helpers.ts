@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -7,6 +8,7 @@ import type { CreateJob, DomainEvent } from '@handella/contracts'
 
 import { buildApp } from '../src/app.js'
 import { aPlanContent, createFakeCodexAdapter } from './codex-fake.js'
+import { createFakeFolderPicker } from './folders-fake.js'
 import { createFakeGitAdapter } from './git-fake.js'
 import {
   aLinearIssue,
@@ -61,6 +63,17 @@ const openApps: App[] = []
 export function aTemporaryDirectory(prefix: string): string {
   const directory = mkdtempSync(join(tmpdir(), prefix))
   temporaryDirectories.push(directory)
+  return directory
+}
+
+/**
+ * A real checkout on disk, for the routes that now ask the filesystem whether
+ * a path is one. `git init` rather than a hand-made `.git`, so the helper is
+ * making the thing the assertion is about.
+ */
+export function aCheckoutDirectory(): string {
+  const directory = aTemporaryDirectory('handella-checkout-')
+  execFileSync('git', ['init', '--quiet'], { cwd: directory })
   return directory
 }
 
@@ -143,6 +156,7 @@ export async function buildTestApp(
   const app = await buildApp({
     broadcaster: context.broadcaster,
     codex: createFakeCodexAdapter(),
+    folders: createFakeFolderPicker(),
     dispatcher: createDispatcher({
       git,
       linear,
@@ -171,6 +185,7 @@ export async function cleanupTestContexts(): Promise<void> {
 }
 
 export * from './codex-fake.js'
+export * from './folders-fake.js'
 export * from './git-fake.js'
 export * from './linear-fake.js'
 

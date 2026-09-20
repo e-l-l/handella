@@ -1,5 +1,6 @@
 import {
   ApiErrorSchema,
+  ChosenFolderSchema,
   CreateRepositorySchema,
   RepositorySchema,
   UpdateRepositorySchema,
@@ -9,14 +10,32 @@ import {
   type FastifyPluginCallbackTypebox,
 } from '@fastify/type-provider-typebox'
 
+import type { FolderPicker } from '../adapters/folders.js'
+import { assertRepositoryPath } from '../domain/repository-path.js'
 import type { Store } from '../domain/store.js'
 
 const RepositoryIdParamsSchema = Type.Object({ repositoryId: Type.String() })
 
 export const repositoryRoutes: FastifyPluginCallbackTypebox<{
+  folders: FolderPicker
   store: Store
 }> = (app, options, done) => {
-  const { store } = options
+  const { folders, store } = options
+
+  /**
+   * The dialog, opened on the machine the service is running on. A POST rather
+   * than a GET because it is not a read: it puts a window in front of someone
+   * and waits for them. That keeps a link and a prefetch out, and nothing
+   * else — a body-less POST is a CORS simple request, so what keeps another
+   * site's script out is the same-origin hook in `app.ts` (ADR 0009).
+   */
+  app.post(
+    '/api/repositories/choose-path',
+    {
+      schema: { response: { 200: ChosenFolderSchema, 502: ApiErrorSchema } },
+    },
+    async () => ({ path: await folders.choose() }),
+  )
 
   app.get(
     '/api/repositories',
@@ -32,8 +51,10 @@ export const repositoryRoutes: FastifyPluginCallbackTypebox<{
         response: { 201: RepositorySchema, 400: ApiErrorSchema },
       },
     },
-    async (request, reply) =>
-      reply.code(201).send(store.createRepository(request.body)),
+    async (request, reply) => {
+      assertRepositoryPath(request.body.path)
+      return reply.code(201).send(store.createRepository(request.body))
+    },
   )
 
   app.get(
@@ -60,8 +81,14 @@ export const repositoryRoutes: FastifyPluginCallbackTypebox<{
         },
       },
     },
-    async (request) =>
-      store.updateRepository(request.params.repositoryId, request.body),
+    async (request) => {
+      // Only when the path is the field being edited: a rename should not be
+      // refused because a checkout moved out from under a row months ago.
+      if (request.body.path !== undefined) {
+        assertRepositoryPath(request.body.path)
+      }
+      return store.updateRepository(request.params.repositoryId, request.body)
+    },
   )
 
   app.delete(

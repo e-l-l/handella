@@ -59,6 +59,13 @@ Turning an Actionable Issue, existing or newly created, into a Job. It precedes
 Dispatch and commits nothing but the Job record.
 _Avoid_: Import, ingest, triage
 
+**Selection**:
+The Actionable Issues the Handler has picked to take, each with its Choices,
+before any Job exists. It outlives leaving the Intake screen and is emptied
+issue by issue as each Job is created; an issue a live Job already holds stays
+in it, blocked, rather than vanishing.
+_Avoid_: Cart, basket, draft, session
+
 **Work Class**:
 Whether a Job is a Feature, which needs an interactive planning interview, or a
 Routine, which Handella can plan on its own.

@@ -19,6 +19,8 @@ export const apiErrorCodes = [
   'linear_issue_already_linked',
   'repository_not_found',
   'repository_in_use',
+  'repository_path_invalid',
+  'folder_picker_unavailable',
   'canonical_branch_claimed',
   'canonical_branch_unowned',
   'git_unavailable',
@@ -29,6 +31,7 @@ export const apiErrorCodes = [
   'plan_version_not_found',
   'plan_content_invalid',
   'runbook_version_not_found',
+  'cross_origin_refused',
   'validation_failed',
   'internal_error',
 ] as const

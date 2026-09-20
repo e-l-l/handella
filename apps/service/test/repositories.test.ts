@@ -1,13 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { unavailableFolderPicker } from '../src/adapters/folders.js'
 import { DomainError } from '../src/domain/errors.js'
 import {
+  aCheckoutDirectory,
   aLinearIssueLink,
+  aTemporaryDirectory,
   buildTestApp,
   cleanupTestContexts,
+  createFakeFolderPicker,
   createTestContext,
   testRepositoryId,
-  testRepositoryPath,
 } from './helpers.js'
 
 afterEach(cleanupTestContexts)
@@ -130,7 +133,7 @@ describe('the repositories API', () => {
     const created = await app.inject({
       method: 'POST',
       url: '/api/repositories',
-      payload: aCheckout(),
+      payload: aCheckout({ path: aCheckoutDirectory() }),
     })
     expect(created.statusCode).toBe(201)
 
@@ -159,15 +162,113 @@ describe('the repositories API', () => {
 
   it('refuses a second repository on the same checkout', async () => {
     const { app } = await buildTestApp()
+    // A real one, because the path check now runs before the index does and
+    // this test is about the index.
+    const path = aCheckoutDirectory()
+    const payload = aCheckout({ path })
+    await app.inject({ method: 'POST', url: '/api/repositories', payload })
 
     const response = await app.inject({
       method: 'POST',
       url: '/api/repositories',
-      payload: aCheckout({ path: testRepositoryPath }),
+      payload: { ...payload, name: 'the same checkout again' },
     })
 
     // The unique index is the backstop; nothing above it claims to have asked.
     expect(response.statusCode).toBe(500)
+  })
+
+  it('refuses a path that is not there at all', async () => {
+    const { app } = await buildTestApp()
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/repositories',
+      payload: aCheckout({
+        // A child of a directory that does exist: missing on any machine,
+        // rather than missing on this one.
+        path: `${aTemporaryDirectory('handella-missing-')}/no-such-checkout`,
+      }),
+    })
+
+    expect(response.statusCode).toBe(400)
+    expect(response.json()).toMatchObject({ code: 'repository_path_invalid' })
+  })
+
+  it('refuses a directory that is not a checkout', async () => {
+    const { app } = await buildTestApp()
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/repositories',
+      payload: aCheckout({ path: aTemporaryDirectory('handella-plain-') }),
+    })
+
+    expect(response.statusCode).toBe(400)
+    expect(response.json().message).toMatch(/no \.git/)
+  })
+
+  it('checks a path an update moves, and leaves a rename alone', async () => {
+    const { app } = await buildTestApp()
+
+    const moved = await app.inject({
+      method: 'PATCH',
+      url: `/api/repositories/${testRepositoryId}`,
+      payload: { path: '/nowhere/at/all' },
+    })
+    expect(moved.statusCode).toBe(400)
+
+    // The seeded row's own path does not exist either, which is the point:
+    // a rename is not the moment to relitigate where a checkout went.
+    const renamed = await app.inject({
+      method: 'PATCH',
+      url: `/api/repositories/${testRepositoryId}`,
+      payload: { name: 'still fine' },
+    })
+    expect(renamed.statusCode).toBe(200)
+  })
+})
+
+describe('choosing a path with the native dialog', () => {
+  it('answers with what the Handler picked', async () => {
+    const folders = createFakeFolderPicker({ path: '/Users/handler/acme' })
+    const { app } = await buildTestApp({ folders })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/repositories/choose-path',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ path: '/Users/handler/acme' })
+    expect(folders.opened()).toBe(1)
+  })
+
+  it('treats a cancelled dialog as an answer rather than a failure', async () => {
+    const folders = createFakeFolderPicker({ path: null })
+    const { app } = await buildTestApp({ folders })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/repositories/choose-path',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ path: null })
+  })
+
+  it('reports a platform with no dialog without refusing the form', async () => {
+    const { app } = await buildTestApp({ folders: unavailableFolderPicker })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/repositories/choose-path',
+    })
+
+    expect(response.statusCode).toBe(502)
+    expect(response.json()).toMatchObject({
+      code: 'folder_picker_unavailable',
+    })
   })
 
   it('renames one in place', async () => {

@@ -1,7 +1,7 @@
 import { Type, type Static } from 'typebox'
 
 import { BranchNameSchema, defaultBaseBranch } from './job.js'
-import { IsoDateTimeSchema, UuidSchema } from './primitives.js'
+import { IsoDateTimeSchema, Nullable, UuidSchema } from './primitives.js'
 
 /**
  * The Handler's own label for a checkout. Spelled once because `Repository`,
@@ -74,3 +74,22 @@ export const UpdateRepositorySchema = Type.Object(
 )
 
 export type UpdateRepository = Static<typeof UpdateRepositorySchema>
+
+/**
+ * What the native folder dialog came back with. A browser cannot read the
+ * absolute path of a folder the viewer picked — `webkitdirectory` gives a
+ * relative one and `showDirectoryPicker` gives a handle with only a name — so
+ * the dialog is opened by the service, on the machine it is already running
+ * on, and the path travels back over the API.
+ *
+ * `path` is null when the Handler cancelled. Cancelling is an answer rather
+ * than a failure, so it is not an error response.
+ */
+export const ChosenFolderSchema = Type.Object(
+  {
+    path: Nullable(RepositoryPathSchema),
+  },
+  { additionalProperties: false, $id: 'ChosenFolder' },
+)
+
+export type ChosenFolder = Static<typeof ChosenFolderSchema>

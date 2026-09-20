@@ -273,3 +273,34 @@ export const runbookVersionNotFound = (): DomainError =>
     409,
     'This installation has no runbook to snapshot',
   )
+
+/**
+ * The path is well-formed but does not name a checkout. Refused on the way in
+ * rather than discovered at dispatch, where the first sign of a typo is a
+ * worktree that cannot be cut for a job the Handler has already committed to.
+ */
+export const repositoryPathInvalid = (message: string): DomainError =>
+  new DomainError('repository_path_invalid', 400, message)
+
+/**
+ * A request that did not come from a page Handella served. The dashboard and
+ * the API share one loopback origin (ADR 0001), so a same-origin call is the
+ * only legitimate one; anything else is another site reaching for a service it
+ * can see only because it runs on the Handler's own machine.
+ */
+export const crossOriginRefused = (): DomainError =>
+  new DomainError(
+    'cross_origin_refused',
+    403,
+    'This request did not come from Handella',
+  )
+
+/**
+ * There is no native dialog to open. The Handler can still type a path, so
+ * this refuses the convenience and not the operation.
+ */
+export const folderPickerUnavailable = (
+  message: string,
+  cause?: unknown,
+): DomainError =>
+  new DomainError('folder_picker_unavailable', 502, message, { cause })

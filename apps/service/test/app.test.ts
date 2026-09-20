@@ -82,6 +82,68 @@ describe('Handella service', () => {
     expect(response.headers['content-type']).toContain('application/json')
   })
 
+  /**
+   * The service is loopback-only and unauthenticated, so the browser's account
+   * of where a request came from is the whole of its access control. A POST
+   * with no body is a CORS simple request: it arrives without a preflight, and
+   * whether its side effect happens is decided here or not at all.
+   */
+  describe('requests from a page Handella did not serve', () => {
+    it('refuses one that reaches for the API', async () => {
+      const { app } = await buildTestApp()
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/repositories/choose-path',
+        headers: { 'sec-fetch-site': 'cross-site' },
+      })
+
+      expect(response.statusCode).toBe(403)
+      expect(response.json()).toMatchObject({ code: 'cross_origin_refused' })
+    })
+
+    it('refuses a sibling loopback port too', async () => {
+      const { app } = await buildTestApp()
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/repositories',
+        headers: { 'sec-fetch-site': 'same-site' },
+      })
+
+      expect(response.statusCode).toBe(403)
+    })
+
+    it('lets the dashboard through', async () => {
+      const { app } = await buildTestApp()
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/api/repositories',
+        headers: { 'sec-fetch-site': 'same-origin' },
+      })
+
+      expect(response.statusCode).toBe(200)
+    })
+
+    it('still opens the dashboard itself from a link elsewhere', async () => {
+      const dashboardPath = aTemporaryDirectory('handella-dashboard-')
+      writeFileSync(
+        join(dashboardPath, 'index.html'),
+        '<main>Handella shell</main>',
+      )
+      const { app } = await buildTestApp({ dashboardPath })
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/system',
+        headers: { 'sec-fetch-site': 'cross-site' },
+      })
+
+      expect(response.statusCode).toBe(200)
+    })
+  })
+
   it('serves the SPA fallback for client-side routes', async () => {
     const dashboardPath = aTemporaryDirectory('handella-dashboard-')
     writeFileSync(

@@ -4,9 +4,10 @@ import { useState } from 'react'
 
 import { intakeKeys } from '../api/intake.ts'
 import {
+  chooseRepositoryPath,
   createRepository,
   deleteRepository,
-  fetchRepositories,
+  repositoriesOptions,
   repositoryKeys,
 } from '../api/repositories.ts'
 import {
@@ -33,10 +34,7 @@ export function RepositorySettings() {
   const [draft, setDraft] = useState(emptyDraft)
   const queryClient = useQueryClient()
 
-  const repositories = useQuery({
-    queryKey: repositoryKeys.all,
-    queryFn: fetchRepositories,
-  })
+  const repositories = useQuery(repositoriesOptions)
 
   // Adding or removing one changes what Intake can offer as a base branch.
   const refresh = async () => {
@@ -55,8 +53,24 @@ export function RepositorySettings() {
     mutationFn: (repositoryId: string) => deleteRepository(repositoryId),
     onSettled: refresh,
   })
+  // A name is proposed from the folder only when the Handler has not written
+  // one: the dialog answers the question it was opened for and no other.
+  const choosePath = useMutation({
+    mutationFn: chooseRepositoryPath,
+    onSuccess: ({ path }) => {
+      if (path === null) return
+      setDraft((current) => ({
+        ...current,
+        name:
+          current.name.trim() === ''
+            ? (path.split('/').pop() ?? '')
+            : current.name,
+        path,
+      }))
+    },
+  })
 
-  const failure = add.error ?? remove.error
+  const failure = add.error ?? remove.error ?? choosePath.error
   const incomplete = draft.name.trim() === '' || !draft.path.startsWith('/')
 
   return (
@@ -129,17 +143,30 @@ export function RepositorySettings() {
         <div className="flex flex-col gap-2">
           <label className="flex flex-col gap-2">
             <span className={labelClass}>Path</span>
-            <input
-              className={`${pillFieldClass} font-mono`}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  path: event.target.value,
-                }))
-              }
-              placeholder="/Users/you/workspace/acme"
-              value={draft.path}
-            />
+            {/* The dialog is opened by the service, not the page: a browser is
+                never told the absolute path of a folder someone picks. Typing
+                still works, and is the whole story if the dialog fails. */}
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className={`${pillFieldClass} min-w-0 flex-1 font-mono`}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    path: event.target.value,
+                  }))
+                }
+                placeholder="/Users/you/workspace/acme"
+                value={draft.path}
+              />
+              <button
+                className={secondaryButtonClass}
+                disabled={choosePath.isPending}
+                onClick={() => choosePath.mutate()}
+                type="button"
+              >
+                {choosePath.isPending ? 'Choosing…' : 'Choose…'}
+              </button>
+            </div>
           </label>
           {/* Absolute because a worktree outlives the process that cut it.
               The submit button is disabled until it is one, so the rule is

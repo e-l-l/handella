@@ -21,6 +21,9 @@ procedure for doing it.
 
 ## Doing the work
 
+- Implement the plan with the \`/implement\` skill. Invoke it and let it carry
+  out the plan; do not hand-edit your way through the steps instead. If this
+  environment has no such skill, work the steps yourself and say so.
 - Work through the plan's steps in order. A step marked required has to pass;
   an optional step may be abandoned if it turns out to be wrong.
 - Match the surrounding code: its naming, its comment density, its idioms. A
@@ -31,6 +34,9 @@ procedure for doing it.
 
 ## Before you finish
 
+- Once \`/implement\` has finished, run \`/simplify\` over the change and apply
+  what it finds. This is part of the work, not an optional extra. Without that
+  skill, read the change back for reuse and simplification yourself.
 - Run the repository's test suite, type check and linter. Use the commands the
   repository documents, not ones you assume.
 - If a check fails, fix it. If it fails for a reason that predates your change,
