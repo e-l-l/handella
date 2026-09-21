@@ -7,10 +7,10 @@ import {
 
 /**
  * The real adapter puts a window in front of a person, so nothing here is
- * allowed to reach `osascript` or `open`. Every case is one the adapter
- * refuses before it launches anything, which is the half of it worth
- * asserting anyway: the session id check is the only guard on the one value
- * that becomes a command line.
+ * allowed to reach `open`. Every case is one the adapter refuses before it
+ * launches anything, which is the half of it worth asserting anyway: the
+ * session id check is the only guard on the one value that is read back out
+ * of a file rather than passed straight through.
  */
 const noSuchTerminal = 'HandellaNoSuchTerminal'
 
@@ -21,16 +21,18 @@ const anOpener = () => createTerminalOpener({ preferred: noSuchTerminal })
 
 describe('the terminal the Handler named', () => {
   it('answers a known terminal in Handella’s own spelling', () => {
-    // macOS finds `Ghostty.app` for either, so the case the Handler typed
-    // decides nothing about whether it is installed — only about which
-    // launcher it would otherwise be given.
-    expect(canonicalNameFor('ghostty')).toBe('Ghostty')
+    // macOS finds `iTerm.app` for either, so the case the Handler typed
+    // decides nothing about whether it is installed — only how the name is
+    // spelled back at them.
     expect(canonicalNameFor('ITERM')).toBe('iTerm')
     expect(canonicalNameFor('terminal')).toBe('Terminal')
   })
 
-  it('leaves a terminal it does not drive specially as it was typed', () => {
+  it('leaves a terminal it has no name of its own for as it was typed', () => {
     expect(canonicalNameFor('WezTerm')).toBe('WezTerm')
+    // Ghostty is one of those now. It is still openable by name, on the same
+    // terms as any other: handed to `open` as a document, one window.
+    expect(canonicalNameFor('Ghostty')).toBe('Ghostty')
   })
 
   it('is an error when it is not installed, rather than a quiet fallback', async () => {

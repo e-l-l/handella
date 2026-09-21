@@ -41,7 +41,7 @@ chmod 600 .env
 | `HANDELLA_PORT`           | `4310`                  | Local service port                                                                                                                          |
 | `HANDELLA_DATABASE_PATH`  | `.data/handella.sqlite` | SQLite file, relative to the repository root unless absolute                                                                                |
 | `HANDELLA_LINEAR_API_KEY` | _(unset)_               | Linear personal API key. Without it, intake and ad hoc issue creation answer `linear_not_configured` and the dashboard shows a setup notice |
-| `HANDELLA_TERMINAL_APP`   | _(unset)_               | The application "Open session" resumes a job's Codex session in. Unset takes the first of Ghostty, iTerm and Terminal that is installed     |
+| `HANDELLA_TERMINAL_APP`   | _(unset)_               | The application "Open session" resumes a job's Codex session in. Unset takes the first of iTerm and Terminal that is installed              |
 
 Unknown `.env` keys, invalid values, and group/world-readable `.env` files stop startup. The service host is deliberately fixed to `127.0.0.1`.
 

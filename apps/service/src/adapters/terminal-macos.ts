@@ -24,15 +24,21 @@ const applicationDirectories = [
 ]
 
 /**
- * Which terminal gets the window, in the order they are preferred. Ghostty
- * first because it is what this Handler uses; Terminal last because it is the
- * one that is always installed, which makes it the floor rather than a choice.
+ * Which terminal gets the window, in the order they are preferred. Terminal
+ * last because it is the one that is always installed, which makes it the
+ * floor rather than a choice.
  *
- * Asked of the filesystem rather than of Launch Services: `osascript` resolving
- * an application by name can put a chooser dialog in front of someone when the
- * name is unknown, and a probe that opens a window is not a probe.
+ * Asked of the filesystem rather than of Launch Services: `osascript`
+ * resolving an application by name can put a chooser dialog in front of
+ * someone when the name is unknown, and a probe that opens a window is not a
+ * probe.
+ *
+ * Both of these take a document and make one window of it. A terminal that has
+ * to be told how to build a window instead is not listed here: Ghostty was
+ * driven that way and the telling arrived as a second window, which is the one
+ * thing "open the terminal" must not do. docs/adr/0011 records the trade.
  */
-const preferenceOrder = ['Ghostty', 'iTerm', 'Terminal'] as const
+const preferenceOrder = ['iTerm', 'Terminal'] as const
 
 const isInstalled = (application: string): boolean =>
   applicationDirectories.some((directory) =>
@@ -43,11 +49,12 @@ const isInstalled = (application: string): boolean =>
  * The Handler's spelling, answered with Handella's own wherever it names one
  * of the terminals above.
  *
- * macOS filesystems are case-insensitive by default, so `ghostty` finds
- * `Ghostty.app` and passes the installed check — and would then fail the
- * `=== 'Ghostty'` below and be handed to `open -a`, which is the one
- * launcher Ghostty cannot be given a worktree with. A name that is not one of
- * these is left as it was typed: `open -a` is what it will get either way.
+ * macOS filesystems are case-insensitive by default, so `iterm` finds
+ * `iTerm.app` and passes the installed check whatever case it was typed in.
+ * What this decides is the spelling everything downstream says: the name
+ * `open -a` is handed and the name a refusal quotes back. A name that is not
+ * one of these is left as it was typed, because `open -a` is what it will get
+ * either way.
  */
 export const canonicalNameFor = (application: string): string =>
   preferenceOrder.find(
@@ -57,69 +64,24 @@ export const canonicalNameFor = (application: string): string =>
 /**
  * What a session id may look like before it is allowed to become text.
  *
- * Every other value this adapter handles reaches its process as an `argv`
- * item, which is why the Git adapter's rule about never building a command
- * string holds everywhere else here. A resumed session cannot: Ghostty's
- * `initial input` is typed into a shell, so it is a command line by
- * construction. The session id comes from Codex's own `thread.started` event
- * and is a UUID or a `thr_`-style name, so the shape is narrow and worth
- * insisting on rather than escaping — an id with a space in it is Codex having
- * changed, not a string to quote.
+ * Every value this adapter handles reaches its process as an `argv` item, the
+ * session id included: it is written to a file of its own and read back into
+ * `codex resume "$session"`. What that does not cover is the id's own shape. A
+ * newline makes the file two lines and the read keeps only the first; a
+ * leading dash reaches `codex resume` as a flag rather than as a session. The
+ * id comes from Codex's own `thread.started` event and is a UUID or a
+ * `thr_`-style name, so the shape is narrow and worth insisting on rather than
+ * patching around — an id outside it is Codex having changed, not a string to
+ * escape.
  */
 const sessionIdShape = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 const checkSessionId = (sessionId: string): void => {
   if (!sessionIdShape.test(sessionId)) {
     throw terminalUnavailable(
-      'That job’s Codex session id is not a shape Handella will put on a command line',
+      'That job’s Codex session id is not a shape Handella will hand to Codex',
     )
   }
-}
-
-/**
- * Ghostty opens a window through its AppleScript dictionary rather than
- * through `open`, because `open -a` hands an application a document and
- * Ghostty's document is not a directory: the working directory is a property
- * of the surface being created, so the surface has to be described.
- *
- * `on run argv` rather than an interpolated path. A worktree path is composed
- * from a Canonical Branch that arrives from Linear, and the reason the Git
- * adapter never builds a command string is the reason this never builds a
- * script string.
- *
- * `initial input` rather than `command`, because `command` replaces the shell
- * and the window then dies with the session. Typing the line leaves the
- * Handler standing in the Worktree when they quit Codex, which is the other
- * half of what they opened this for.
- */
-const ghosttyScript = [
-  'on run argv',
-  '\tset target to item 1 of argv',
-  '\ttell application "Ghostty"',
-  '\t\tactivate',
-  '\t\tset cfg to new surface configuration',
-  '\t\tset initial working directory of cfg to target',
-  '\t\tif (count of argv) > 1 then',
-  '\t\t\tset initial input of cfg to item 2 of argv',
-  '\t\tend if',
-  '\t\tnew window with configuration cfg',
-  '\tend tell',
-  'end run',
-].join('\n')
-
-const openGhostty = async (request: TerminalRequest): Promise<void> => {
-  await run(
-    'osascript',
-    [
-      '-e',
-      ghosttyScript,
-      request.path,
-      ...(request.sessionId === null
-        ? []
-        : [`codex resume ${request.sessionId}\n`]),
-    ],
-    { timeout: launchTimeoutMs },
-  )
 }
 
 /**
@@ -165,10 +127,14 @@ const writeLauncher = (cwd: string, sessionId: string): string => {
 }
 
 /**
- * Everything else: a terminal that takes a folder as a document, which is what
- * Terminal.app and iTerm both are — or, for a Job with a session, the launcher
- * above. An argv array and no shell, on the same terms as every other adapter
- * here.
+ * The whole of how a window is opened: a terminal handed a document, which is
+ * the Worktree for a Job with no session yet and the launcher above for one
+ * that has. An argv array and no shell, on the same terms as every other
+ * adapter here.
+ *
+ * One document, so one window. Nothing here activates the application first:
+ * `open` brings it forward on its own, and asking for that separately is what
+ * left a bare window standing beside the one the Handler asked for.
  */
 const openWithOpen = async (
   application: string,
@@ -235,15 +201,11 @@ export const createTerminalOpener = (
     const chosen = chooseTerminal(options.preferred)
 
     try {
-      if (chosen === 'Ghostty') {
-        await openGhostty(request)
-      } else {
-        await openWithOpen(chosen, request)
-      }
+      await openWithOpen(chosen, request)
     } catch (error) {
       if (isMissingCommand(error)) {
         throw terminalUnavailable(
-          'osascript and open are not installed, so no terminal can be opened',
+          'open is not installed, so no terminal can be opened',
           error,
         )
       }

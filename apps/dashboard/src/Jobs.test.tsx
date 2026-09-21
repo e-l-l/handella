@@ -344,7 +344,7 @@ describe('the jobs list', () => {
           ? jsonResponse(
               {
                 code: 'terminal_unavailable',
-                message: 'Ghostty could not be opened at /tmp/worktree',
+                message: 'Terminal could not be opened at /tmp/worktree',
               },
               502,
             )
@@ -357,7 +357,7 @@ describe('the jobs list', () => {
     )
 
     expect(
-      await screen.findByText('Ghostty could not be opened at /tmp/worktree'),
+      await screen.findByText('Terminal could not be opened at /tmp/worktree'),
     ).toBeInTheDocument()
   })
 

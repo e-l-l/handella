@@ -32,33 +32,43 @@ resume one.
 
 Which terminal is decided by looking for the application bundle rather than by
 asking Launch Services, which can put a chooser in front of someone when a name
-is unknown — a probe that opens a window is not a probe. Ghostty first, then
-iTerm, then Terminal.app, which is always installed and so is the floor rather
-than a choice; `HANDELLA_TERMINAL_APP` overrides the order for a Handler who
-has a different preference, and naming one that is not installed is an error
-rather than a silent fallback.
+is unknown — a probe that opens a window is not a probe. iTerm first, then
+Terminal.app, which is always installed and so is the floor rather than a
+choice; `HANDELLA_TERMINAL_APP` overrides the order for a Handler who has a
+different preference, and naming one that is not installed is an error rather
+than a silent fallback.
 
-Ghostty is driven through its AppleScript dictionary because `open -a` hands an
-application a document and a directory is not one of Ghostty's: the working
-directory is a property of the surface being created, so the surface has to be
-described. The session is started with that surface's `initial input` rather
-than its `command`, because `command` replaces the shell and the window would
-then die the moment the Handler quit Codex — typing the line instead leaves
-them standing in the Worktree, which is the other half of what they opened it
-for. The path and the command are passed as `argv` to the script rather than
-interpolated into it, for the reason the Git adapter never builds a command
-string.
+Ghostty was first, and was driven through its AppleScript dictionary rather
+than through `open`, because `open -a` hands an application a document and a
+directory is not one of Ghostty's: the working directory is a property of the
+surface being created, so the surface had to be described. Describing it meant
+`activate` and then `new window with configuration`, and the Handler got two
+windows — the one the application opens for itself on being brought forward,
+and the one that was asked for. Reaching the session past a bare window is not
+what a button called "open the terminal" promises, and no ordering of the two
+verbs removed the first window, so the special case went rather than growing a
+workaround. What is left is the one way every terminal here is driven: hand
+`open` a document, get a window. A terminal that has to be told how to build
+one is out of scope; it can still be named in `HANDELLA_TERMINAL_APP`, and it
+gets a document like the rest.
 
-`initial input` is the one value here that cannot be an `argv` item, since it
-is a command line by construction, so the session id is checked against a shape
-before it is allowed to become text. It arrives from Codex's own
-`thread.started` event as a UUID or a `thr_`-style name; an id with a space in
-it is Codex having changed rather than a string worth escaping, and refusing it
-is the honest answer. Terminal.app and iTerm cannot be told to run anything at
-all — they open a folder as a shell and that is the whole of their document
-handling — so a Job with a session is handed a launcher script instead. Its
-text is a constant and the two values it needs sit in files beside it, which is
-how that path keeps the same rule without quoting anything.
+Terminal.app and iTerm cannot be told to run anything at all — they open a
+folder as a shell and that is the whole of their document handling — so a Job
+with a session is handed a launcher script instead of its Worktree. The
+script's text is a constant and the two values it needs sit in files beside it,
+so nothing is interpolated and nothing is quoted, which is the rule the Git
+adapter keeps by never building a command string. It ends in a login shell, so
+quitting Codex leaves the Handler standing in the Worktree rather than closing
+the window — the other half of what they opened it for.
+
+The session id is still checked against a shape before it is written, for a
+narrower reason than the one Ghostty gave it. It reaches `codex resume` as an
+`argv` item now, so quoting is not the worry; the worry is the id itself. A
+newline makes the file two lines and the read keeps the first, and a leading
+dash arrives as a flag rather than as a session. It comes from Codex's own
+`thread.started` event as a UUID or a `thr_`-style name, so an id outside that
+shape is Codex having changed rather than a string worth patching around, and
+refusing it is the honest answer.
 
 The refusal path stays mild. A platform with no terminal, a terminal that would
 not open, or a session id that will not be typed all answer 502 beside a job
