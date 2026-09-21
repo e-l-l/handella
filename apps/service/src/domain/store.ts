@@ -15,6 +15,8 @@ import {
   type AttentionItem,
   type AttentionItemKind,
   type BaseBranchSuggestions,
+  type CodexPassKind,
+  type CodexProcessRecord,
   type CreateJob,
   type DomainEvent,
   type IntakeChoices,
@@ -77,7 +79,14 @@ import { attemptLogPathFor } from './attempt-log.js'
 import { parseImplementationReport } from './implementation-report.js'
 import { assertPlanContent, parsePlanContent } from './plan-content.js'
 import {
+  describeOverlaps,
+  plannedPaths,
+  sharedPaths,
+  type Overlap,
+} from './overlap.js'
+import {
   attentionItems,
+  codexProcesses,
   implementationAttempts,
   jobTransitions,
   jobs,
@@ -99,6 +108,7 @@ type RunbookVersionRow = typeof runbookVersions.$inferSelect
 type ReviewRow = typeof reviewRounds.$inferSelect
 type AttemptRow = typeof implementationAttempts.$inferSelect
 type MilestoneRow = typeof milestones.$inferSelect
+type CodexProcessRow = typeof codexProcesses.$inferSelect
 type Transaction = Parameters<Parameters<HandellaDatabase['transaction']>[0]>[0]
 /** Whatever a read can run on: the connection outside a unit of work, the transaction inside one. */
 type Executor = HandellaDatabase | Transaction
@@ -263,6 +273,62 @@ export interface Store {
    * still mid-implementation, and its worktree still holds the work.
    */
   failImplementation(input: { body: string; jobId: string }): Job
+  /**
+   * The Codex process a pass has just started, so it can be found again after
+   * the process that started it is gone.
+   *
+   * Written from inside the pass rather than around it, because the pid does
+   * not exist until Codex is spawned and the pass is the only thing that hears
+   * about it.
+   */
+  startCodexProcess(input: {
+    jobId: string
+    kind: CodexPassKind
+    pid: number
+  }): CodexProcessRecord
+  /**
+   * The pass is over, however it ended. Idempotent: a row already closed stays
+   * as it was, because the reap closes rows too and a pass that outlived a
+   * restart would otherwise reopen the question.
+   */
+  endCodexProcess(codexProcessId: string): void
+  /** Every process Handella still believes is running, for the reap to check. */
+  listLiveCodexProcesses(): CodexProcessRecord[]
+  /**
+   * The merge GitHub has confirmed. Moves the job to `merged` and resolves the
+   * overlap warning it may be carrying, because a job whose work has landed is
+   * no longer about to touch anything.
+   *
+   * Does not touch the worktree: removing a directory is not a database write,
+   * and whether it is safe to remove is a question only the filesystem can
+   * answer. Reconciliation asks it and then calls one of the two below.
+   */
+  confirmMerge(input: { jobId: string }): Job
+  /**
+   * The worktree is gone from disk, so the column that named it is cleared.
+   * The Job keeps everything else — its branch, its session, its attempts, its
+   * logs — which is what masterplan.md:69 means by retaining job metadata.
+   */
+  releaseWorktree(input: { jobId: string }): Job
+  /**
+   * The worktree could not be removed safely, so it was not removed at all.
+   * Raises a failure item and changes nothing else: the Job stays `merged`,
+   * because it is, and the directory stays where it is.
+   */
+  failCleanup(input: { body: string; jobId: string }): void
+  /**
+   * The worktrees under Handella's root that no Job row names, as one
+   * standalone item replaced whenever the set changes and resolved when it
+   * empties.
+   *
+   * Reports rather than removes. A directory Handella cannot attribute is one
+   * it cannot prove is not the Handler's (docs/adr/0013).
+   *
+   * Answers whether the Handler's inbox changed, so a caller that runs on a
+   * timer can say something the first time and stay quiet afterwards without
+   * keeping its own idea of what has already been said.
+   */
+  reportOrphanWorktrees(input: { paths: readonly string[] }): boolean
   claimForDispatch(input: ClaimForDispatchInput): DispatchClaim
   createJob(input: CreateJob): Job
   /** Numbering is per job and every revision is kept, approved or not. */
@@ -376,6 +442,37 @@ const suspensionAttention: Partial<Record<JobSuspension, AttentionRule>> = {
 const implementationFailure: AttentionRule = {
   kind: 'failure',
   title: 'Implementation could not finish',
+}
+
+/**
+ * What a merge that could not be tidied up after raises. The pull request is
+ * merged either way — that part is GitHub's fact, not Handella's — so this is
+ * not a job that failed but a directory that was left behind, and the item is
+ * the only place the Handler would otherwise never hear about it.
+ */
+const cleanupFailure: AttentionRule = {
+  kind: 'failure',
+  title: 'Worktree was left in place after the merge',
+}
+
+/**
+ * What Reconciliation raises about residue it cannot attribute. Standalone:
+ * the whole point is that no Job claims these, so there is no Job to hang it
+ * on (docs/adr/0013).
+ */
+const orphanWorktrees: AttentionRule = {
+  kind: 'orphanWorktree',
+  title: 'Worktrees no job claims',
+}
+
+/**
+ * Two live Jobs whose approved Plans name the same path. A warning and never a
+ * refusal: masterplan.md:56 has predicted overlap warn without serialising,
+ * and nothing reads this back.
+ */
+const overlapWarning: AttentionRule = {
+  kind: 'overlapWarning',
+  title: 'Another job plans to touch the same files',
 }
 
 /** Derived, so leaving a rule table always clears exactly what entering it can raise. */
@@ -593,6 +690,21 @@ const toReviewRound = (row: ReviewRow): ReviewRound => ({
   createdAt: row.createdAt.toISOString(),
 })
 
+/**
+ * Dates rather than ISO strings, unlike every other mapper here: this record
+ * never reaches the wire, and what reads it is a comparison against what `ps`
+ * reports. Formatting it for a browser that will never see it would only mean
+ * parsing it back.
+ */
+const toCodexProcess = (row: CodexProcessRow): CodexProcessRecord => ({
+  id: row.id,
+  jobId: row.jobId,
+  kind: row.kind,
+  pid: row.pid,
+  startedAt: row.startedAt,
+  endedAt: row.endedAt ?? null,
+})
+
 const jobChanged = (job: Job): DomainEvent => ({
   name: 'job.changed',
   data: { jobId: job.id, state: job.state, suspension: job.suspension },
@@ -637,9 +749,16 @@ export function createStore(options: CreateStoreOptions): Store {
         .map(map)
     }
 
+  /**
+   * `null` asks for the standalone items — the ones Reconciliation raises about
+   * residue no Job claims — rather than for every Job's at once. The two are
+   * one query because they are one table and one notion of open, and the
+   * alternative was a second hand-written select that could disagree with this
+   * one about what open means.
+   */
   const openItemsOfKinds = (
     tx: Transaction,
-    jobId: string,
+    jobId: string | null,
     kinds: readonly AttentionItemKind[],
   ): AttentionRow[] =>
     tx
@@ -647,7 +766,9 @@ export function createStore(options: CreateStoreOptions): Store {
       .from(attentionItems)
       .where(
         and(
-          eq(attentionItems.jobId, jobId),
+          jobId === null
+            ? isNull(attentionItems.jobId)
+            : eq(attentionItems.jobId, jobId),
           isNull(attentionItems.resolvedAt),
           inArray(attentionItems.kind, [...kinds]),
         ),
@@ -682,6 +803,35 @@ export function createStore(options: CreateStoreOptions): Store {
   }
 
   /**
+   * The insert itself, which is the half every raise shares. What differs is
+   * when it is reached: `raiseItem` will not raise a second item of a kind that
+   * is already open, while the orphan report replaces its own item whenever the
+   * residue changes.
+   */
+  const insertItem = (
+    tx: Transaction,
+    input: {
+      body: string | null
+      jobId: string | null
+      rule: AttentionRule
+    },
+    now: Date,
+    events: DomainEvent[],
+  ): void => {
+    const row: AttentionRow = {
+      id: newId(),
+      jobId: input.jobId,
+      kind: input.rule.kind,
+      title: input.rule.title,
+      body: input.body,
+      createdAt: now,
+      resolvedAt: null,
+    }
+    tx.insert(attentionItems).values(row).run()
+    events.push(attentionChanged(toAttentionItem(row)))
+  }
+
+  /**
    * Takes the open items the caller has already read rather than re-reading
    * them, so raising is one insert and never a second query.
    */
@@ -700,17 +850,7 @@ export function createStore(options: CreateStoreOptions): Store {
       return
     }
 
-    const row: AttentionRow = {
-      id: newId(),
-      jobId: input.jobId,
-      kind: input.rule.kind,
-      title: input.rule.title,
-      body: input.body,
-      createdAt: now,
-      resolvedAt: null,
-    }
-    tx.insert(attentionItems).values(row).run()
-    events.push(attentionChanged(toAttentionItem(row)))
+    insertItem(tx, input, now, events)
   }
 
   /**
@@ -895,6 +1035,87 @@ export function createStore(options: CreateStoreOptions): Store {
       .orderBy(desc(planVersions.revision))
       .limit(1)
       .get()
+
+  /**
+   * Every other live Job in this repository whose approved Plan names a path
+   * this one's does.
+   *
+   * Approved rather than merely planned: a revision the Handler has sent back
+   * is not what that Job is going to do, and warning about it would be warning
+   * about a plan that no longer exists. A Job whose newest revision is pending
+   * therefore counts for nothing here even if an earlier one was approved —
+   * what it will execute is the newest, and the newest is not settled.
+   */
+  const overlapsWith = (
+    tx: Transaction,
+    job: JobRow,
+    mine: ReadonlySet<string>,
+  ): Overlap[] => {
+    if (job.repositoryId === null || mine.size === 0) return []
+
+    const candidates = tx
+      .select()
+      .from(jobs)
+      .where(
+        and(
+          eq(jobs.repositoryId, job.repositoryId),
+          ne(jobs.id, job.id),
+          notInArray(jobs.state, [...settledJobStates]),
+        ),
+      )
+      .all()
+
+    const found: Overlap[] = []
+
+    for (const candidate of candidates) {
+      const plan = readNewestPlan(tx, candidate.id)
+      if (plan === undefined || plan.approvalState !== 'approved') continue
+
+      const paths = sharedPaths(
+        mine,
+        plannedPaths(
+          parsePlanContent(plan.content, `Plan revision ${plan.revision}`),
+        ),
+      )
+      if (paths.length === 0) continue
+
+      found.push({
+        jobId: candidate.id,
+        label:
+          candidate.linearIssueKey === null
+            ? candidate.title
+            : `${candidate.linearIssueKey} — ${candidate.title}`,
+        paths,
+      })
+    }
+
+    return found
+  }
+
+  /**
+   * The one write that moves a Job's worktree column, in either direction:
+   * Dispatch names the directory it cut, and the cleanup after a merge clears
+   * the name once the directory is gone. The Job keeps everything else either
+   * way, so what a reader has to get right is the same both times — the row
+   * rebuilt in memory has to match what was persisted, or the event announces
+   * a job nobody has.
+   */
+  const writeWorktreePath = (
+    tx: Transaction,
+    current: JobRow,
+    worktreePath: string | null,
+    now: Date,
+    events: DomainEvent[],
+  ): Job => {
+    tx.update(jobs)
+      .set({ updatedAt: now, worktreePath })
+      .where(eq(jobs.id, current.id))
+      .run()
+
+    const job = toJob({ ...current, updatedAt: now, worktreePath })
+    events.push(jobChanged(job))
+    return job
+  }
 
   const readLatestPlanVersion = (
     tx: Transaction,
@@ -1172,22 +1393,15 @@ export function createStore(options: CreateStoreOptions): Store {
     },
 
     recordWorktree(input) {
-      return commit((tx, events, now) => {
-        const current = readJob(tx, input.jobId)
-
-        tx.update(jobs)
-          .set({ worktreePath: input.worktreePath, updatedAt: now })
-          .where(eq(jobs.id, input.jobId))
-          .run()
-
-        const job = toJob({
-          ...current,
-          worktreePath: input.worktreePath,
-          updatedAt: now,
-        })
-        events.push(jobChanged(job))
-        return job
-      })
+      return commit((tx, events, now) =>
+        writeWorktreePath(
+          tx,
+          readJob(tx, input.jobId),
+          input.worktreePath,
+          now,
+          events,
+        ),
+      )
     },
 
     /**
@@ -1285,7 +1499,7 @@ export function createStore(options: CreateStoreOptions): Store {
 
     approvePlan(input) {
       return commit((tx, events, now) => {
-        readJob(tx, input.jobId)
+        const current = readJob(tx, input.jobId)
         const version = readLatestPlanVersion(
           tx,
           input.jobId,
@@ -1312,7 +1526,7 @@ export function createStore(options: CreateStoreOptions): Store {
           })
           .run()
 
-        return applyTransition(
+        const job = applyTransition(
           tx,
           {
             actor: 'handler',
@@ -1324,6 +1538,41 @@ export function createStore(options: CreateStoreOptions): Store {
           now,
           events,
         )
+
+        // Computed here because this is the moment the file list becomes the
+        // one this job will execute: the revision is approved and a Runbook
+        // Snapshot has been taken against it. Raised and never read back — the
+        // scheduler is not told, so an overlap can only ever warn.
+        // The row as it was read at the top: what the candidate rule asks of
+        // it is its id and its repository, and a transition changes neither.
+        const overlaps = overlapsWith(
+          tx,
+          current,
+          plannedPaths(
+            parsePlanContent(
+              version.content,
+              `Plan revision ${version.revision}`,
+            ),
+          ),
+        )
+
+        if (overlaps.length > 0) {
+          // Nothing to resolve first: there is no edge out of `approved` back
+          // to a plan, so a Job is approved once and this runs once for it.
+          raiseItem(
+            tx,
+            openItemsOfKinds(tx, input.jobId, [overlapWarning.kind]),
+            {
+              body: describeOverlaps(overlaps),
+              jobId: input.jobId,
+              rule: overlapWarning,
+            },
+            now,
+            events,
+          )
+        }
+
+        return job
       })
     },
 
@@ -1668,6 +1917,134 @@ export function createStore(options: CreateStoreOptions): Store {
           events,
         ),
       )
+    },
+
+    startCodexProcess(input) {
+      // No event: a pid is not something the dashboard shows, and a `job.changed`
+      // here would have every open screen refetch twice per pass for news it
+      // cannot render.
+      const row: CodexProcessRow = {
+        id: newId(),
+        jobId: input.jobId,
+        kind: input.kind,
+        pid: input.pid,
+        startedAt: clock(),
+        endedAt: null,
+      }
+      // Read for its refusal and nothing else: a row hanging off a Job that
+      // is not there is a pid the reap could never attribute, and the foreign
+      // key would say so in a language the caller cannot act on.
+      readJob(database, input.jobId)
+      database.insert(codexProcesses).values(row).run()
+      return toCodexProcess(row)
+    },
+
+    endCodexProcess(codexProcessId) {
+      database
+        .update(codexProcesses)
+        .set({ endedAt: clock() })
+        .where(
+          and(
+            eq(codexProcesses.id, codexProcessId),
+            isNull(codexProcesses.endedAt),
+          ),
+        )
+        .run()
+    },
+
+    listLiveCodexProcesses() {
+      return database
+        .select()
+        .from(codexProcesses)
+        .where(isNull(codexProcesses.endedAt))
+        .orderBy(asc(codexProcesses.startedAt))
+        .all()
+        .map(toCodexProcess)
+    },
+
+    confirmMerge(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        // Already there, or moved on by hand. Either way the merge is not news
+        // and re-asserting it would be a second transition from `merged`.
+        if (isSettledJobState(current.state)) return toJob(current)
+
+        const job = applyTransition(
+          tx,
+          {
+            actor: 'system',
+            expectedState: current.state,
+            jobId: input.jobId,
+            reason: 'GitHub reports the pull request as merged',
+            to: 'merged',
+          },
+          now,
+          events,
+        )
+
+        // The warning was about what this job was going to touch. It has
+        // touched it, and the pull request is in.
+        resolveItems(
+          tx,
+          openItemsOfKinds(tx, input.jobId, [overlapWarning.kind]),
+          now,
+          events,
+        )
+
+        return job
+      })
+    },
+
+    releaseWorktree(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+        if (current.worktreePath === null) return toJob(current)
+
+        return writeWorktreePath(tx, current, null, now, events)
+      })
+    },
+
+    failCleanup(input) {
+      commit((tx, events, now) => {
+        raiseItem(
+          tx,
+          openItemsOfKinds(tx, input.jobId, [cleanupFailure.kind]),
+          { body: input.body, jobId: input.jobId, rule: cleanupFailure },
+          now,
+          events,
+        )
+      })
+    },
+
+    reportOrphanWorktrees(input) {
+      return commit((tx, events, now) => {
+        const open = openItemsOfKinds(tx, null, [orphanWorktrees.kind])
+
+        if (input.paths.length === 0) {
+          resolveItems(tx, open, now, events)
+          return open.length > 0
+        }
+
+        const body = [...input.paths]
+          .sort()
+          .map((path) => `- ${path}`)
+          .join('\n')
+
+        // Unchanged since the last pass, so nothing is written: this runs on a
+        // timer, and a fresh item every five minutes would be an inbox that
+        // never settles and an item whose age meant nothing.
+        if (open.some((item) => item.body === body)) return false
+
+        resolveItems(tx, open, now, events)
+        insertItem(
+          tx,
+          { body, jobId: null, rule: orphanWorktrees },
+          now,
+          events,
+        )
+        return true
+      })
     },
 
     abandonPlanningPass(input) {

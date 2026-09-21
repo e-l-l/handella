@@ -165,6 +165,72 @@ describe('the attention inbox filters', () => {
   })
 })
 
+describe('the housekeeping Reconciliation reports', () => {
+  const orphans = anAttentionItem({
+    body: '- /Users/handler/.data/worktrees/repo/ell/abandoned',
+    id: '523e4567-e89b-42d3-a456-426614174000',
+    // Standalone: the whole point is that no Job claims these.
+    jobId: null,
+    kind: 'orphanWorktree',
+    title: 'Worktrees no job claims',
+  })
+
+  const overlap = anAttentionItem({
+    body: 'ENG-9 — Rework the session store also plans to touch:\n- src/store.ts',
+    id: '623e4567-e89b-42d3-a456-426614174000',
+    kind: 'overlapWarning',
+    title: 'Another job plans to touch the same files',
+  })
+
+  it('names the paths it found and promises not to delete them', async () => {
+    stubApi({ attention: [orphans], jobs: [] })
+
+    renderAt('/')
+
+    expect(
+      await screen.findByText('Worktrees no job claims'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText('- /Users/handler/.data/worktrees/repo/ell/abandoned'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/never deletes them/)).toBeInTheDocument()
+    // Standalone, so there is no job to open.
+    expect(screen.queryByRole('link', { name: 'Open job' })).toBeNull()
+  })
+
+  it('says an overlap costs the jobs nothing', async () => {
+    stubApi({ attention: [overlap], jobs: [aJob({ state: 'approved' })] })
+
+    renderAt('/')
+
+    expect(
+      await screen.findByText('Another job plans to touch the same files'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/src\/store\.ts/)).toBeInTheDocument()
+    // masterplan.md:56 — a warning, and never a reason to serialise.
+    expect(screen.getByText(/nothing is serialised/)).toBeInTheDocument()
+  })
+
+  it('collects both behind one filter, away from the failures', async () => {
+    stubApi({
+      attention: [anAttentionItem(), orphans, overlap],
+      jobs: [],
+    })
+    const user = userEvent.setup()
+
+    renderAt('/')
+    await screen.findByText('Worktrees no job claims')
+    await user.click(screen.getByRole('button', { name: 'Housekeeping' }))
+
+    expect(screen.getByText('Worktrees no job claims')).toBeInTheDocument()
+    expect(
+      screen.getByText('Another job plans to touch the same files'),
+    ).toBeInTheDocument()
+    // Neither is a Job that has stopped, so neither belongs with the blockers.
+    expect(screen.queryByText('Job stopped and needs a decision')).toBeNull()
+  })
+})
+
 describe('the job detail page', () => {
   it('offers only the moves the state machine allows', async () => {
     stubApi({ jobs: [aJob({ state: 'intake' })] })
@@ -416,5 +482,51 @@ describe('the live event stream', () => {
     await waitFor(() => {
       expect(fetchMock.mock.calls.length).toBeGreaterThan(before)
     })
+  })
+
+  it('offers to ask GitHub about a merge while a pull request is open', async () => {
+    const fetchMock = stubApi({
+      jobs: [
+        aJob({
+          state: 'prOpen',
+          originalPrUrl: 'https://github.com/acme/monorepo/pull/41',
+          worktreePath: '/Users/handler/.data/worktrees/repo/ell/eng-412',
+        }),
+      ],
+    })
+    const user = userEvent.setup()
+
+    renderAt(`/jobs/${aJob().id}`)
+    await user.click(await screen.findByRole('button', { name: 'Check merge' }))
+
+    expect(postsTo(fetchMock, '/check-merge')).toHaveLength(1)
+  })
+
+  it('does not offer it for a job with no pull request to ask about', async () => {
+    stubApi({ jobs: [aJob({ state: 'implementing' })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+    await screen.findByText('Fix the flaky login test')
+
+    // The dashboard does not offer what the service would do nothing about.
+    expect(screen.queryByRole('button', { name: 'Check merge' })).toBeNull()
+  })
+
+  it('reads a merged job’s missing worktree as the end of its life', async () => {
+    stubApi({ jobs: [aJob({ state: 'merged', worktreePath: null })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+
+    // Removed once the merge was confirmed, which is not the same absence as
+    // a cut that never finished.
+    expect(await screen.findByText('removed after merge')).toBeInTheDocument()
+  })
+
+  it('still reads a lost cut as a lost cut', async () => {
+    stubApi({ jobs: [aJob({ state: 'queued', worktreePath: null })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+
+    expect(await screen.findByText('not cut')).toBeInTheDocument()
   })
 })

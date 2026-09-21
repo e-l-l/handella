@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   availableSlots,
+  isAwaitingMerge,
   isQueued,
   isRunning,
   maxConcurrency,
@@ -145,5 +146,43 @@ describe('queue order', () => {
     ]
     orderQueue(input)
     expect(input.map((job) => job.id)).toEqual(['b', 'a'])
+  })
+})
+
+describe('waiting for a merge', () => {
+  it('counts a job whose pull request is open, in either state it can be in', () => {
+    expect(isAwaitingMerge(aJob({ state: 'prOpen' }))).toBe(true)
+    // `reviewing` is the same pull request with comments on it, and the
+    // Handler may merge at any point in either.
+    expect(isAwaitingMerge(aJob({ state: 'reviewing' }))).toBe(true)
+  })
+
+  it('counts no job that has not opened one, or has finished with it', () => {
+    for (const state of [
+      'intake',
+      'queued',
+      'planning',
+      'planReview',
+      'approved',
+      'implementing',
+      'merged',
+      'archived',
+      'cancelled',
+    ] as const) {
+      expect(isAwaitingMerge(aJob({ state }))).toBe(false)
+    }
+  })
+
+  it('counts no stopped job, whatever became of its pull request', () => {
+    // A stop means leave it alone, and tidying its worktree away because the
+    // branch happened to land is the opposite of that.
+    expect(
+      isAwaitingMerge(
+        aJob({ state: 'prOpen', suspension: 'stoppedByHandler' }),
+      ),
+    ).toBe(false)
+    expect(
+      isAwaitingMerge(aJob({ state: 'prOpen', suspension: 'interrupted' })),
+    ).toBe(false)
   })
 })

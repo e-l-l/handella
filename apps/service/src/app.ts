@@ -14,6 +14,7 @@ import type { TerminalOpener } from './adapters/terminal.js'
 import type { StatusSource } from './database/database.js'
 import { crossOriginRefused, DomainError } from './domain/errors.js'
 import type { Dispatcher } from './domain/dispatch.js'
+import type { MergeCheck } from './domain/merge-check.js'
 import type { Store } from './domain/store.js'
 import type { Broadcaster } from './events/broadcaster.js'
 import { attentionRoutes } from './routes/attention.js'
@@ -34,6 +35,13 @@ interface BuildAppOptions {
   github: GitHubAdapter
   linear: LinearAdapter
   logger?: FastifyServerOptions['logger']
+  /**
+   * The capability rather than the Reconciler that also owns it: the route
+   * needs to ask about one Job, and handing it the whole component would make
+   * a request able to start a pass over every Job — and would make the app
+   * depend on something that wants the app's own logger to exist first.
+   */
+  mergeCheck: MergeCheck
   startedAt?: Date
   statusSource: StatusSource
   store: Store
@@ -121,6 +129,7 @@ export async function buildApp(options: BuildAppOptions) {
   })
   await app.register(jobRoutes, {
     dispatcher: options.dispatcher,
+    mergeCheck: options.mergeCheck,
     store: options.store,
     terminal: options.terminal,
   })

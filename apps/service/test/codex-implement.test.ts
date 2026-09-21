@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -59,6 +60,26 @@ const aStubCodex = (body: string): { argvPath: string; directory: string } => {
 }
 
 /**
+ * Every process still in a spawned pass's group, by pid.
+ *
+ * `ps` exits non-zero when the group is empty, which is the answer rather than
+ * a failure — the same reason the process adapter does not wrap it in
+ * `cliRunner`.
+ */
+const processesInGroup = (pgid: number): string[] => {
+  try {
+    return execFileSync('ps', ['-o', 'pid=', '-g', String(pgid)], {
+      encoding: 'utf8',
+    })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+  } catch {
+    return []
+  }
+}
+
+/**
  * Imported after PATH is set, because the adapter builds the environment it
  * spawns with once at load. Resetting the module registry is what lets a test
  * decide which `codex` it is talking to.
@@ -78,9 +99,11 @@ const aRequest = (
 ): ImplementationRequest & {
   milestones: MilestoneInput[]
   lines: string[]
+  pids: number[]
 } => {
   const milestones: MilestoneInput[] = []
   const lines: string[] = []
+  const pids: number[] = []
 
   return {
     attempt: 1,
@@ -91,8 +114,10 @@ const aRequest = (
     } as ImplementationRequest['job'],
     lines,
     milestones,
+    pids,
     onLine: (text) => lines.push(text),
     onMilestone: (milestone) => milestones.push(milestone),
+    onSpawn: (pid) => pids.push(pid),
     plan: aPlanContent(),
     round: 1,
     runbook: '# runbook',
@@ -259,5 +284,43 @@ describe('the implementation pass', () => {
     const result = await pending
 
     expect(result.outcome).toBe('stopped')
+  })
+
+  it('reports the pid of the process it started', async () => {
+    const stub = aStubCodex(aReportBody(completedReport))
+    const codex = await anAdapter(stub.directory)
+    const request = aRequest()
+
+    await codex.implement(request)
+
+    // Recorded by the caller for as long as the pass runs, because a pid
+    // nobody wrote down is a process no restart can find again.
+    expect(request.pids).toHaveLength(1)
+    expect(request.pids[0]).toBeGreaterThan(0)
+  })
+
+  it('takes the commands Codex started down with it', async () => {
+    // A Runbook has the agent install dependencies and run its tests, so a
+    // pass being stopped is usually waiting on a child of its own. Signalling
+    // Codex alone leaves that child holding the worktree — and the slot the
+    // stop was meant to free (docs/adr/0012).
+    const stub = aStubCodex('sleep 120')
+    const codex = await anAdapter(stub.directory)
+    const abort = new AbortController()
+    const request = aRequest({ signal: abort.signal })
+
+    const pending = codex.implement(request)
+    await vi.waitFor(() => expect(request.pids).toHaveLength(1))
+    const pid = request.pids[0] ?? 0
+    // The stub and the `sleep` it is waiting on, which is the shape being
+    // asserted: two processes, one group.
+    await vi.waitFor(() => expect(processesInGroup(pid).length).toBe(2))
+
+    abort.abort()
+    expect((await pending).outcome).toBe('stopped')
+
+    await vi.waitFor(() => expect(processesInGroup(pid)).toEqual([]), {
+      timeout: 5_000,
+    })
   })
 })

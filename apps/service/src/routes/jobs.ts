@@ -24,6 +24,7 @@ import { Transform } from 'node:stream'
 import type { TerminalOpener } from '../adapters/terminal.js'
 import type { Dispatcher } from '../domain/dispatch.js'
 import { worktreeNotCut } from '../domain/errors.js'
+import type { MergeCheck } from '../domain/merge-check.js'
 import type { Store } from '../domain/store.js'
 
 const JobIdParamsSchema = Type.Object({ jobId: Type.String() })
@@ -79,10 +80,11 @@ const errorResponses = {
 
 export const jobRoutes: FastifyPluginCallbackTypebox<{
   dispatcher: Dispatcher
+  mergeCheck: MergeCheck
   store: Store
   terminal: TerminalOpener
 }> = (app, options, done) => {
-  const { dispatcher, store, terminal } = options
+  const { dispatcher, mergeCheck, store, terminal } = options
 
   /**
    * The whole order rather than one job's position: reordering a list by
@@ -181,6 +183,30 @@ export const jobRoutes: FastifyPluginCallbackTypebox<{
       })
       return reply.code(204).send(null)
     },
+  )
+
+  /**
+   * Asks GitHub now whether this Job's pull request has been merged, rather
+   * than waiting for Reconciliation's timer to come round.
+   *
+   * The Handler has just merged it and wants the worktree gone; five minutes
+   * of a directory that has no reason to exist is what this saves. Answers
+   * with the Job either way and refuses nothing: a pull request that is not
+   * merged yet is not an error, it is an answer, and the Job comes back
+   * unchanged to say so.
+   *
+   * A POST because it can move the Job and delete a directory, though it is
+   * phrased as a question — the same reason `/dispatch` is one.
+   */
+  app.post(
+    '/api/jobs/:jobId/check-merge',
+    {
+      schema: {
+        params: JobIdParamsSchema,
+        response: { 200: JobSchema, ...errorResponses, 502: ApiErrorSchema },
+      },
+    },
+    async (request) => mergeCheck.check(request.params.jobId),
   )
 
   app.post(

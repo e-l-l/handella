@@ -8,6 +8,7 @@ import {
   ImplementationReportSchema,
   PlanContentSchema,
   codexIdleMs,
+  codexTerminationGraceMs,
   implementationTimeoutMs,
   planningTimeoutMs,
 } from '@handella/contracts'
@@ -18,6 +19,7 @@ import { parseImplementationReport } from '../domain/implementation-report.js'
 import { parsePlanContent } from '../domain/plan-content.js'
 import type { Redactor } from '../domain/redact.js'
 import { commandEnv, onPath } from './command.js'
+import { signalProcessGroup } from './processes-ps.js'
 import type {
   CodexAdapter,
   CodexAdapterOptions,
@@ -29,9 +31,6 @@ import type {
 } from './codex.js'
 
 const binary = 'codex'
-
-/** How long a stopped pass is given to exit before it is killed outright. */
-const graceMs = 5_000
 
 /** A milestone is a line in a list, so its summary is one line and a short one. */
 const longestSummary = 200
@@ -325,6 +324,12 @@ interface PassRequest {
   onMilestone?: ((milestone: MilestoneInput) => void) | undefined
   /** Told the moment Codex opens the thread, rather than when the pass ends. */
   onSessionId?: ((sessionId: string) => void) | undefined
+  /**
+   * Told the pid the moment the process exists, and required rather than
+   * optional: a pass whose pid was never recorded is one no restart can find
+   * again, and every caller has somewhere to put it.
+   */
+  onSpawn: (pid: number) => void
   prompt: string
   redact: Redactor
   signal: AbortSignal
@@ -363,6 +368,11 @@ const runPass = (request: PassRequest): Promise<PassEnding> =>
   new Promise<PassEnding>((resolve, reject) => {
     const child = spawn(binary, request.args, {
       cwd: request.cwd,
+      // Codex leads its own process group, so both this pass and a later
+      // reap can signal the commands it starts and not only Codex itself
+      // (docs/adr/0012). Deliberately not `unref`ed: this pass still waits
+      // for it.
+      detached: true,
       env: codexEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -373,13 +383,37 @@ const runPass = (request: PassRequest): Promise<PassEnding> =>
     let stderr = ''
     let killer: NodeJS.Timeout | undefined
 
+    // Reported before anything is awaited, so the row that says how to find
+    // this process exists for as long as the process does. A pass whose pid
+    // reached nobody is one a restart could not reap.
+    if (child.pid !== undefined) request.onSpawn(child.pid)
+
+    /**
+     * The whole group rather than Codex alone, which would leave the `npm
+     * install` or test run it is waiting on holding the worktree — and holding
+     * the slot the stop was meant to free.
+     *
+     * Every failure is swallowed, unlike the reap's use of the same function.
+     * A pass has nowhere to put one: it is already ending, the ending it
+     * reports is the one it was stopped for, and a signal the operating system
+     * would not deliver does not change what the Handler is told.
+     */
+    const signalGroup = (signal: NodeJS.Signals): void => {
+      if (child.pid === undefined) return
+      try {
+        signalProcessGroup(child.pid, signal)
+      } catch {
+        // Nothing a pass can do with it.
+      }
+    }
+
     const stop = (reason: string, byClock = false): void => {
       if (stopped !== undefined) return
       stopped = { byClock, reason }
-      child.kill('SIGTERM')
+      signalGroup('SIGTERM')
       // Codex owns a session file and child processes of its own, so it is
       // asked to stop before it is made to.
-      killer = setTimeout(() => child.kill('SIGKILL'), graceMs)
+      killer = setTimeout(() => signalGroup('SIGKILL'), codexTerminationGraceMs)
       killer.unref()
     }
 
@@ -582,6 +616,7 @@ export const createCodexAdapter = (
         label: 'Implementation',
         onLine: input.onLine,
         onMilestone: input.onMilestone,
+        onSpawn: input.onSpawn,
         prompt: implementationPrompt(input),
         redact: options.redact,
         signal: input.signal,
@@ -668,6 +703,7 @@ export const createCodexAdapter = (
         cwd: input.worktreePath,
         label: 'Planning',
         onSessionId: input.onSessionId,
+        onSpawn: input.onSpawn,
         prompt: planningPrompt(input),
         redact: options.redact,
         signal: input.signal,

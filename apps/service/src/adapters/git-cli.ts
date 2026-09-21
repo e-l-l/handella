@@ -3,9 +3,17 @@ import { dirname } from 'node:path'
 
 import { gitUnavailable, worktreeCreationFailed } from '../domain/errors.js'
 import { cliRunner, commandEnv } from './command.js'
-import type { AddWorktreeInput, GitAdapter } from './git.js'
+import type { AddWorktreeInput, GitAdapter, WorktreeListing } from './git.js'
 
 const git = cliRunner('git', gitUnavailable, commandEnv())
+
+/**
+ * One `key value` line out of a `--porcelain` block, or undefined when the
+ * block has none. Spelling the key once is what keeps the slice and the test
+ * that finds the line from disagreeing about the space between them.
+ */
+const field = (lines: readonly string[], key: string): string | undefined =>
+  lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1)
 
 export const createGitAdapter = (): GitAdapter => ({
   async fetchBase(repositoryPath, base) {
@@ -52,6 +60,58 @@ export const createGitAdapter = (): GitAdapter => ({
 
   async removeWorktree(repositoryPath, worktreePath) {
     await git(repositoryPath, ['worktree', 'remove', worktreePath])
+  },
+
+  /**
+   * `--porcelain` rather than the human listing, whose columns are alignment
+   * rather than structure and whose branch appears in square brackets that a
+   * branch name may itself contain.
+   */
+  async listWorktrees(repositoryPath) {
+    const { stdout } = await git(repositoryPath, [
+      'worktree',
+      'list',
+      '--porcelain',
+    ])
+
+    return (
+      stdout
+        .split('\n\n')
+        .map((block) => block.split('\n').filter((line) => line !== ''))
+        .filter((lines) => lines.length > 0)
+        // The checkout itself is always the first block, and it is the one
+        // entry that is never a Job's worktree.
+        .map((lines, position) => {
+          const path = field(lines, 'worktree')
+          const ref = field(lines, 'branch')
+
+          return path === undefined
+            ? undefined
+            : {
+                // Stripped where the prefix is there rather than by length, so
+                // a ref that is not under `refs/heads/` comes back as git
+                // spelled it instead of losing its first nineteen characters.
+                branch: ref?.replace(/^refs\/heads\//, '') ?? null,
+                isMain: position === 0,
+                path,
+              }
+        })
+        .filter((listing): listing is WorktreeListing => listing !== undefined)
+    )
+  },
+
+  async pruneWorktrees(repositoryPath) {
+    await git(repositoryPath, ['worktree', 'prune'])
+  },
+
+  /**
+   * Untracked files count, which is why this is `status` and not
+   * `diff --quiet`: an agent that wrote a file and never added it has still
+   * left work behind, and that is exactly the work a removal would destroy.
+   */
+  async isWorktreeClean(worktreePath) {
+    const { stdout } = await git(worktreePath, ['status', '--porcelain'])
+    return stdout.trim() === ''
   },
 
   async headBranch(worktreePath) {

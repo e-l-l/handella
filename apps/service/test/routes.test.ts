@@ -5,10 +5,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   aDispatchableJob,
+  aJobAwaitingMerge,
+  aPullRequest,
   aTemporaryDirectory,
   anIntakeJob,
   buildTestApp,
   cleanupTestContexts,
+  type FakeGitHubAdapter,
 } from './helpers.js'
 
 afterEach(cleanupTestContexts)
@@ -245,6 +248,66 @@ describe('suspension endpoints', () => {
 
     expect(response.statusCode).toBe(409)
     expect(response.json()).toMatchObject({ code: 'suspension_not_allowed' })
+  })
+})
+
+describe('POST /api/jobs/:jobId/check-merge', () => {
+  const branch = 'ell/eng-0-something'
+
+  it('confirms the merge the Handler has just made', async () => {
+    const built = await buildTestApp()
+    const jobId = await aJobAwaitingMerge(built.context, {
+      git: built.git,
+      worktreeRoot: built.worktreeRoot,
+    })
+    ;(built.github as FakeGitHubAdapter).pullRequests.set(
+      branch,
+      aPullRequest({ state: 'MERGED' }),
+    )
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${jobId}/check-merge`,
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      state: 'merged',
+      worktreePath: null,
+    })
+  })
+
+  it('answers with the job unchanged when the pull request is still open', async () => {
+    const built = await buildTestApp()
+    const jobId = await aJobAwaitingMerge(built.context, {
+      git: built.git,
+      worktreeRoot: built.worktreeRoot,
+    })
+    ;(built.github as FakeGitHubAdapter).pullRequests.set(
+      branch,
+      aPullRequest({ state: 'OPEN' }),
+    )
+
+    const response = await built.app.inject({
+      method: 'POST',
+      url: `/api/jobs/${jobId}/check-merge`,
+    })
+
+    // Not an error: a pull request nobody has merged yet is an answer.
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({ state: 'prOpen' })
+  })
+
+  it('reports an unknown job as a typed 404', async () => {
+    const { app } = await buildTestApp()
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/jobs/123e4567-e89b-42d3-a456-426614174000/check-merge',
+    })
+
+    expect(response.statusCode).toBe(404)
+    expect(response.json()).toMatchObject({ code: 'job_not_found' })
   })
 })
 

@@ -42,6 +42,10 @@ const kindTones: Record<AttentionItemKind, Tone> = {
   conflictProposal: 'red',
   readyPr: 'mint',
   failure: 'red',
+  // Neither is a Job that has stopped: one is residue on disk and the other
+  // is two Jobs that are both fine. Amber says look, not act.
+  orphanWorktree: 'amber',
+  overlapWarning: 'amber',
 }
 
 /**
@@ -76,6 +80,14 @@ const kindActions: Record<AttentionItemKind, { action: string; meta: string }> =
       action: 'Inspect the job',
       meta: 'branch, worktree, session and logs are kept',
     },
+    orphanWorktree: {
+      action: 'Look at the paths',
+      meta: 'Handella reports these and never deletes them',
+    },
+    overlapWarning: {
+      action: 'Open the job',
+      meta: 'both jobs still run; nothing is serialised',
+    },
   }
 
 /**
@@ -93,6 +105,11 @@ const filters = [
     id: 'failures',
     kinds: ['failure', 'blocker', 'conflictProposal'],
     label: 'Failures',
+  },
+  {
+    id: 'housekeeping',
+    kinds: ['orphanWorktree', 'overlapWarning'],
+    label: 'Housekeeping',
   },
   {
     id: 'pull-requests',

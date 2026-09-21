@@ -9,6 +9,7 @@ import {
   maxImplementationAttempts,
   orderQueue,
   type Attempt,
+  type CodexPassKind,
   type Job,
   type JobState,
   type StartableJob,
@@ -22,9 +23,11 @@ import type { Broadcaster } from '../events/broadcaster.js'
 import {
   codexSessionMissing,
   dispatchNeedsLinearIssue,
+  messageOf,
   transitionGuardFailed,
 } from './errors.js'
 import type { Store } from './store.js'
+import { createWorkTracker } from './work-tracker.js'
 
 /**
  * The most often a running job announces itself. A turn produces a milestone
@@ -33,10 +36,6 @@ import type { Store } from './store.js'
  * without making the stream the transport.
  */
 const progressCoalesceMs = 1_000
-
-/** Whatever this error said, for a store write that has to record something. */
-const messageOf = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error)
 
 export interface Scheduler {
   /** Runs one pass now and subscribes to the events that warrant another. */
@@ -82,9 +81,51 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
    * an interruption from a fault.
    */
   let shuttingDown = false
-  const inFlight = new Set<Promise<void>>()
+  const work = createWorkTracker()
   /** The live passes, so a stop or a shutdown can reach the process itself. */
   const passes = new Map<string, AbortController>()
+
+  /**
+   * Keeps the row that says how to find a Codex process for exactly as long as
+   * the pass owns it.
+   *
+   * A pass holds a pid in a closure the process cannot outlive: if this one
+   * dies the handle dies with it, and the process carries on writing in the
+   * worktree with nothing left that knows its number. The row is what a later
+   * startup reaps from (docs/adr/0012), and closing it here is what stops that
+   * reap signalling a pid this process has already finished with — and which
+   * the operating system is free to hand to something else.
+   */
+  const recordProcess = (jobId: string, kind: CodexPassKind) => {
+    let codexProcessId: string | undefined
+
+    return {
+      onSpawn: (pid: number): void => {
+        try {
+          codexProcessId = store.startCodexProcess({ jobId, kind, pid }).id
+        } catch (error) {
+          // A pass that is already running is not worth stopping over a row
+          // that failed to be written; what it costs is a reap that cannot
+          // find this process, which is worth saying out loud.
+          logger?.error(
+            { err: error, jobId, pid },
+            'Could not record a Codex process',
+          )
+        }
+      },
+      release: (): void => {
+        if (codexProcessId === undefined) return
+        try {
+          store.endCodexProcess(codexProcessId)
+        } catch (error) {
+          logger?.error(
+            { err: error, jobId },
+            'Could not close the record of a Codex process',
+          )
+        }
+      },
+    }
+  }
 
   /**
    * The slot is claimed by the transition, which has already committed by the
@@ -94,6 +135,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   const runPlanningPass = async (job: StartableJob): Promise<void> => {
     const abort = new AbortController()
     passes.set(job.id, abort)
+    const codexProcess = recordProcess(job.id, 'plan')
 
     try {
       if (job.linearIssueId === null) {
@@ -129,6 +171,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
             store.recordCodexSession({ jobId: job.id, sessionId })
           }
         },
+        onSpawn: codexProcess.onSpawn,
         runbook: runbook.content,
         sessionId: job.codexSessionId ?? undefined,
         signal: abort.signal,
@@ -167,6 +210,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
         )
       }
     } finally {
+      codexProcess.release()
       passes.delete(job.id)
     }
   }
@@ -355,6 +399,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   const runImplementationPass = async (job: StartableJob): Promise<void> => {
     const abort = new AbortController()
     passes.set(job.id, abort)
+    const codexProcess = recordProcess(job.id, 'implement')
 
     let attempt: Attempt | undefined
     let log: number | undefined
@@ -421,6 +466,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
           })
           announceProgress(job.id)
         },
+        onSpawn: codexProcess.onSpawn,
         plan: plan.content,
         round: started.round,
         runbook: snapshot.content,
@@ -514,6 +560,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
         )
       }
     } finally {
+      codexProcess.release()
       // Cleared before it is closed, because `onLine` still holds this closure
       // and a closed descriptor number is one the operating system is free to
       // hand to something else.
@@ -528,11 +575,6 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
         tick()
       }
     }
-  }
-
-  const track = (pass: Promise<void>): void => {
-    const tracked = pass.finally(() => inFlight.delete(tracked))
-    inFlight.add(tracked)
   }
 
   /**
@@ -589,7 +631,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     const jobs = store.listJobs()
 
     for (const job of jobs.filter(isOrphaned)) {
-      track(runImplementationPass(job))
+      work.track(runImplementationPass(job))
     }
 
     const slots = availableSlots(jobs)
@@ -617,7 +659,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
         continue
       }
 
-      track(kind.run(job))
+      work.track(kind.run(job))
     }
   }
 
@@ -674,11 +716,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       announcements.clear()
     },
 
-    async whenIdle() {
-      // Each pass can start another, so this drains rather than awaiting once.
-      while (inFlight.size > 0) {
-        await Promise.all([...inFlight])
-      }
-    },
+    // Each pass can start another, which is what the tracker's drain is for.
+    whenIdle: work.whenIdle,
   }
 }

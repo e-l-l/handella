@@ -1,6 +1,12 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 
-import type { AddWorktreeInput, GitAdapter } from '../src/adapters/git.js'
+import { join } from 'node:path'
+
+import type {
+  AddWorktreeInput,
+  GitAdapter,
+  WorktreeListing,
+} from '../src/adapters/git.js'
 import { gitUnavailable } from '../src/domain/errors.js'
 
 export interface FakeGitAdapter extends GitAdapter {
@@ -18,6 +24,18 @@ export interface FakeGitAdapter extends GitAdapter {
    */
   readonly heads: Map<string, string>
   readonly removed: string[]
+  /**
+   * Worktrees git knows about but this fake never cut, so a suite can put
+   * residue in front of Reconciliation without a repository on disk. Keyed by
+   * repository path, because that is what the listing is asked about.
+   */
+  readonly registered: Map<string, WorktreeListing[]>
+  /**
+   * Worktrees holding uncommitted work. Absent means clean, which is the
+   * ordinary case and the one the guard lets through.
+   */
+  readonly dirty: Set<string>
+  readonly pruned: string[]
 }
 
 interface FakeGitOptions {
@@ -41,7 +59,10 @@ export function createFakeGitAdapter(
   const added: AddWorktreeInput[] = []
   const fetched: { base: string; repositoryPath: string }[] = []
   const removed: string[] = []
+  const pruned: string[] = []
   const heads = new Map<string, string>()
+  const registered = new Map<string, WorktreeListing[]>()
+  const dirty = new Set<string>()
 
   // One armed failure, spent by whichever call reaches it first.
   const consume = (): void => {
@@ -54,10 +75,13 @@ export function createFakeGitAdapter(
 
   const fake: FakeGitAdapter = {
     added,
+    dirty,
     existingBranches: new Set(options.existingBranches ?? []),
     heads,
     failNextWith: undefined,
     fetched,
+    pruned,
+    registered,
     removed,
 
     async fetchBase(repositoryPath, base) {
@@ -75,15 +99,55 @@ export function createFakeGitAdapter(
       added.push(input)
       fake.existingBranches.add(input.branch)
       heads.set(input.worktreePath, input.branch)
+      // Registered as well as made, so a worktree this fake cut is one the
+      // listing knows about — which is what keeps it out of the orphan set.
+      registered.set(input.repositoryPath, [
+        ...(registered.get(input.repositoryPath) ?? []),
+        { branch: input.branch, isMain: false, path: input.worktreePath },
+      ])
       if (options.createsDirectories !== false) {
         mkdirSync(input.worktreePath, { recursive: true })
+        // The `.git` file a real worktree carries, because that is what the
+        // orphan walk recognises a worktree by: without it, a directory this
+        // fake cut would be invisible to the very pass that looks for them.
+        writeFileSync(
+          join(input.worktreePath, '.git'),
+          `gitdir: ${input.repositoryPath}/.git/worktrees/${input.branch}\n`,
+        )
       }
     },
 
-    async removeWorktree(_repositoryPath, worktreePath) {
+    async removeWorktree(repositoryPath, worktreePath) {
       consume()
       removed.push(worktreePath)
       heads.delete(worktreePath)
+      registered.set(
+        repositoryPath,
+        (registered.get(repositoryPath) ?? []).filter(
+          (listing) => listing.path !== worktreePath,
+        ),
+      )
+      // Really removed, because the orphan walk reads the filesystem and a
+      // directory this fake left behind would be reported as residue.
+      rmSync(worktreePath, { force: true, recursive: true })
+    },
+
+    async listWorktrees(repositoryPath) {
+      consume()
+      return [
+        { branch: 'dev', isMain: true, path: repositoryPath },
+        ...(registered.get(repositoryPath) ?? []),
+      ]
+    },
+
+    async pruneWorktrees(repositoryPath) {
+      consume()
+      pruned.push(repositoryPath)
+    },
+
+    async isWorktreeClean(worktreePath) {
+      consume()
+      return !dirty.has(worktreePath)
     },
 
     async headBranch(worktreePath) {

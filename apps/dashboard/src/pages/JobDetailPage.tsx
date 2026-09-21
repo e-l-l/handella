@@ -47,6 +47,21 @@ const sandboxOf = (job: Job): string => {
   return 'read-only until implementation'
 }
 
+/**
+ * Why a Job has no worktree, which is three different facts rather than one.
+ *
+ * A Job at intake has not been dispatched yet. A merged one had its worktree
+ * removed once Handella confirmed the merge, which is the ordinary end of a
+ * Job's life and not an absence at all. Anything else claimed a branch and
+ * then lost the cut — the fetch failed, or a restart landed in the middle of
+ * it — and that one is worth reading as the fault it is.
+ */
+const worktreeAbsence = (state: Job['state']): string => {
+  if (state === 'intake') return 'created at dispatch'
+  if (state === 'merged' || state === 'archived') return 'removed after merge'
+  return 'not cut'
+}
+
 /** Every card on this screen, in both columns: a title, and what it is about. */
 function Card({ children, title }: { children: ReactNode; title: string }) {
   return (
@@ -250,14 +265,7 @@ export function JobDetailPage() {
               <Fact label="Sandbox" value={sandboxOf(job.data)} />
               <Fact
                 label="Worktree"
-                value={
-                  job.data.worktreePath ??
-                  (job.data.state === 'intake'
-                    ? 'created at dispatch'
-                    : // Claimed, but the fetch and the cut have not finished or
-                      // did not survive a restart. Phase 7 reaps this.
-                      'not cut')
-                }
+                value={job.data.worktreePath ?? worktreeAbsence(job.data.state)}
               />
             </dl>
           </Card>

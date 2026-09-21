@@ -1,6 +1,7 @@
 import {
   attemptOutcomes,
   attentionItemKinds,
+  codexPassKinds,
   jobSources,
   jobStates,
   jobSuspensions,
@@ -417,5 +418,52 @@ export const reviewRounds = sqliteTable(
       table.jobId,
       table.roundNumber,
     ),
+  ],
+)
+
+/**
+ * One Codex process Handella started, and whether it believes it is still
+ * running.
+ *
+ * A row exists so that a process can be found again after the process that
+ * spawned it is gone. Nothing else in the database survives that: an Attempt
+ * says a turn was open, but not what to signal, and a planning pass has no
+ * Attempt at all — which is why this hangs off the Job rather than off
+ * `implementation_attempts`.
+ *
+ * `pid` is the process group's leader, because Codex is spawned detached and
+ * its own children — the installs and test runners the Runbook asks for — are
+ * in that group too. Signalling the group is the only way to reach them
+ * (docs/adr/0012).
+ *
+ * `ended_at` is null exactly while Handella believes the process is alive, so
+ * a null row after a restart is one to reap. Believes, not knows: the pid may
+ * have been reused since, which is what `started_at` is compared against
+ * before anything is signalled.
+ */
+export const codexProcesses = sqliteTable(
+  'codex_processes',
+  {
+    id: text('id').primaryKey(),
+    jobId: text('job_id')
+      .notNull()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    kind: text('kind', { enum: codexPassKinds }).notNull(),
+    pid: integer('pid').notNull(),
+    startedAt: integer('started_at', { mode: 'timestamp_ms' }).notNull(),
+    endedAt: integer('ended_at', { mode: 'timestamp_ms' }),
+  },
+  (table) => [
+    check('codex_processes_kind_check', oneOf(table.kind, codexPassKinds)),
+    check('codex_processes_pid_check', sql`${table.pid} > 0`),
+    index('codex_processes_job_id_idx').on(table.jobId),
+    /**
+     * What every reap reads, and the only query this table is asked. Partial
+     * so it stays the size of what is running rather than of everything that
+     * ever ran.
+     */
+    index('codex_processes_live_idx')
+      .on(table.startedAt)
+      .where(sql`${table.endedAt} is null`),
   ],
 )

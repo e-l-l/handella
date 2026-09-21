@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
@@ -213,5 +213,110 @@ describe('removing a worktree', () => {
     // The branch survives its worktree: Phase 7 removes the directory after a
     // merge, and the branch is the pull request's.
     expect(await adapter.branchExists(clone, 'ell/eng-412')).toBe(true)
+  })
+})
+
+describe('reading what worktrees a checkout has', () => {
+  it('names the checkout itself first and every worktree after it', async () => {
+    const { clone } = aClonedRepository()
+    const worktreePath = join(aTemporaryDirectory('handella-wt-'), 'job')
+
+    await adapter.fetchBase(clone, 'dev')
+    await adapter.addWorktree({
+      base: 'dev',
+      branch: 'ell/eng-500',
+      repositoryPath: clone,
+      worktreePath,
+    })
+
+    const listings = await adapter.listWorktrees(clone)
+
+    // The main working tree is the one entry that is never a Job's, and it is
+    // always the first block `--porcelain` prints.
+    expect(listings[0]?.isMain).toBe(true)
+    expect(listings[0]?.branch).toBe('dev')
+    const cut = listings.find((listing) => !listing.isMain)
+    // Compared through `realpathSync`: macOS hands out `/var` paths that git
+    // reports as `/private/var`.
+    expect(cut?.path).toBe(realpathSync(worktreePath))
+    expect(cut?.branch).toBe('ell/eng-500')
+  })
+
+  it('reads a detached worktree as being on no branch at all', async () => {
+    const { clone } = aClonedRepository()
+    const worktreePath = join(aTemporaryDirectory('handella-wt-'), 'job')
+
+    await adapter.fetchBase(clone, 'dev')
+    git(clone, 'worktree', 'add', '--quiet', '--detach', worktreePath, 'dev')
+
+    const detached = (await adapter.listWorktrees(clone)).find(
+      (listing) => !listing.isMain,
+    )
+
+    expect(detached?.branch).toBeNull()
+  })
+
+  it('forgets a worktree whose directory somebody removed by hand', async () => {
+    const { clone } = aClonedRepository()
+    const worktreePath = join(aTemporaryDirectory('handella-wt-'), 'job')
+
+    await adapter.fetchBase(clone, 'dev')
+    await adapter.addWorktree({
+      base: 'dev',
+      branch: 'ell/eng-501',
+      repositoryPath: clone,
+      worktreePath,
+    })
+    rmSync(worktreePath, { force: true, recursive: true })
+
+    await adapter.pruneWorktrees(clone)
+
+    expect(await adapter.listWorktrees(clone)).toHaveLength(1)
+    // Metadata only: the registration is forgotten and the branch is not.
+    expect(await adapter.branchExists(clone, 'ell/eng-501')).toBe(true)
+  })
+})
+
+describe('asking whether a worktree is clean', () => {
+  const aWorktree = async (branch: string): Promise<string> => {
+    const { clone } = aClonedRepository()
+    const worktreePath = join(aTemporaryDirectory('handella-wt-'), 'job')
+    await adapter.fetchBase(clone, 'dev')
+    await adapter.addWorktree({
+      base: 'dev',
+      branch,
+      repositoryPath: clone,
+      worktreePath,
+    })
+    return worktreePath
+  }
+
+  it('calls a freshly cut worktree clean', async () => {
+    expect(await adapter.isWorktreeClean(await aWorktree('ell/eng-502'))).toBe(
+      true,
+    )
+  })
+
+  it('calls a modified file uncommitted work', async () => {
+    const worktreePath = await aWorktree('ell/eng-503')
+    writeFileSync(join(worktreePath, 'README.md'), '# acme, edited\n')
+
+    expect(await adapter.isWorktreeClean(worktreePath)).toBe(false)
+  })
+
+  it('counts an untracked file too, because it is still work', async () => {
+    const worktreePath = await aWorktree('ell/eng-504')
+    writeFileSync(join(worktreePath, 'scratch.md'), 'notes\n')
+
+    expect(await adapter.isWorktreeClean(worktreePath)).toBe(false)
+  })
+
+  it('calls a committed change clean, because the commit is what the PR has', async () => {
+    const worktreePath = await aWorktree('ell/eng-505')
+    writeFileSync(join(worktreePath, 'README.md'), '# acme, edited\n')
+    git(worktreePath, 'add', '.')
+    git(worktreePath, 'commit', '--quiet', '-m', 'edit the readme')
+
+    expect(await adapter.isWorktreeClean(worktreePath)).toBe(true)
   })
 })

@@ -81,6 +81,8 @@ export const attentionKindLabels: Record<AttentionItemKind, string> = {
   conflictProposal: 'Conflict proposal',
   readyPr: 'Ready pull request',
   failure: 'Failure',
+  orphanWorktree: 'Orphaned worktrees',
+  overlapWarning: 'Overlapping work',
 }
 
 export const databaseStatusLabels: Record<

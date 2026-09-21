@@ -33,6 +33,19 @@ export const implementationTimeoutMs = 90 * 60_000
 export const codexIdleMs = 10 * 60_000
 
 /**
+ * How often Reconciliation asks GitHub whether the pull requests it is
+ * watching have been merged.
+ *
+ * A timer rather than an event, because the thing being waited for happens
+ * somewhere Handella cannot hear: only the Handler may merge, and they do it
+ * on github.com. Minutes rather than seconds, because nothing downstream is
+ * urgent — the Job is already `prOpen` and what the merge releases is a
+ * worktree — and because every pass spends a `gh` invocation per watched Job.
+ * The Handler who has just merged and wants it now presses "Check merge".
+ */
+export const mergeCheckIntervalMs = 5 * 60_000
+
+/**
  * A slot is held while Codex is working in a job's worktree. Planning counts:
  * it is a read-only Codex pass, and it occupies the machine the same way.
  */
@@ -79,6 +92,23 @@ export const isImplementable = (job: Job): job is StartableJob =>
   job.suspension === null &&
   job.state === 'approved' &&
   job.worktreePath !== null
+
+/**
+ * A Job whose pull request is open and whose merge Handella is therefore
+ * waiting for. Both states count: `reviewing` is a Job answering comments on
+ * the same pull request, and the Handler may merge it at any point in either.
+ *
+ * Suspension is asked about for the reason the scheduler asks it: a stopped
+ * Job is one the Handler is holding, and quietly removing its worktree because
+ * the pull request happened to land is the opposite of what a stop means.
+ *
+ * Shared rather than private to Reconciliation because the dashboard offers
+ * "Check merge" on exactly these Jobs, and a button that appears where the
+ * check would do nothing is a promise Handella cannot keep.
+ */
+export const isAwaitingMerge = (job: Job): boolean =>
+  job.suspension === null &&
+  (job.state === 'prOpen' || job.state === 'reviewing')
 
 /**
  * The order the queue is read in: the priority the Handler set, then arrival.

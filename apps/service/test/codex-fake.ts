@@ -44,6 +44,13 @@ export const aReport = (
 export interface FakeCodexAdapter extends CodexAdapter {
   /** Every pass asked for, in order, so a test can assert what was sent. */
   readonly calls: PlanningRequest[]
+  /**
+   * The pid each pass reported, in order. Reported at all because the store
+   * keeps a row per live Codex process and the reap reads those rows: a fake
+   * that spawned nothing would leave every recovery test with nothing to
+   * recover.
+   */
+  readonly pids: number[]
   /** Every implementation turn asked for, in order. */
   readonly implementations: ImplementationRequest[]
   /** One armed failure, spent by whichever pass reaches it first. */
@@ -65,18 +72,29 @@ export interface FakeCodexAdapter extends CodexAdapter {
  * `codex-cli.test.ts`; what a fake is for here is the ordering around a pass.
  */
 export const createFakeCodexAdapter = (
-  options: { sessionId?: string } = {},
+  options: { firstPid?: number; sessionId?: string } = {},
 ): FakeCodexAdapter => {
   const calls: PlanningRequest[] = []
   const implementations: ImplementationRequest[] = []
   const answers: ImplementationResult[] = []
+  const pids: number[] = []
   let emitted: { kind: 'command' | 'narration'; summary: string }[] = []
   let nextFailure: Error | undefined
+  let nextPid = options.firstPid ?? 40_000
+
+  /** A distinct pid per pass, so two live passes are two rows. */
+  const spawn = (request: { onSpawn(pid: number): void }): void => {
+    const pid = nextPid
+    nextPid += 1
+    pids.push(pid)
+    request.onSpawn(pid)
+  }
 
   return {
     calls,
     configured: true,
     implementations,
+    pids,
     answerWith(...results) {
       answers.push(...results)
     },
@@ -88,6 +106,7 @@ export const createFakeCodexAdapter = (
     },
     implement(request): Promise<ImplementationResult> {
       implementations.push(request)
+      spawn(request)
 
       for (const milestone of emitted) {
         request.onLine(JSON.stringify({ type: 'item.completed' }))
@@ -118,6 +137,7 @@ export const createFakeCodexAdapter = (
     },
     plan(request): Promise<PlanningResult> {
       calls.push(request)
+      spawn(request)
       const sessionId = request.sessionId ?? options.sessionId ?? 'session-1'
 
       // Announced before anything else, the way the real adapter announces it:

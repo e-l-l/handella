@@ -7,10 +7,13 @@ import { unavailableFolderPicker } from './adapters/folders.js'
 import { createFolderPicker } from './adapters/folders-macos.js'
 import { createGitAdapter } from './adapters/git-cli.js'
 import { createGitHubAdapter } from './adapters/github-cli.js'
+import { createProcessInspector } from './adapters/processes-ps.js'
 import { unavailableTerminal } from './adapters/terminal.js'
 import { createTerminalOpener } from './adapters/terminal-macos.js'
 import { buildApp } from './app.js'
 import { createDispatcher } from './domain/dispatch.js'
+import { createMergeCheck } from './domain/merge-check.js'
+import { createReconciler } from './domain/reconcile.js'
 import { createScheduler } from './domain/scheduler.js'
 import { loadConfig } from './config.js'
 import { defaultMigrationsPath, openDatabase } from './database/database.js'
@@ -71,6 +74,8 @@ async function main(): Promise<void> {
     redact: createRedactor(config.secretValues),
   })
   const github = createGitHubAdapter()
+  const processes = createProcessInspector()
+  const mergeCheck = createMergeCheck({ git, github, store })
   // The dialog is AppleScript, so anywhere else the Handler types the path
   // and is told so, rather than being told osascript is missing.
   // Both of these open something in the Handler's own login session, which
@@ -96,6 +101,7 @@ async function main(): Promise<void> {
     git,
     github,
     linear,
+    mergeCheck,
     store,
     ...(production ? { dashboardPath: config.dashboardPath } : {}),
     logger: production
@@ -130,11 +136,60 @@ async function main(): Promise<void> {
     logger: app.log,
     store,
   })
+
+  const reconciler = createReconciler({
+    git,
+    logger: app.log,
+    mergeCheck,
+    processes,
+    store,
+    worktreeRoot: config.worktreeRoot,
+  })
+
+  // After the app so it can use the app's logger, and before `listen` so it
+  // finishes before any request can arrive: building the app opens no socket,
+  // and `listen` at the end of this function is what admits the Handler.
+  //
+  // Before the scheduler above all: a leftover Codex may still be writing in a
+  // worktree, and starting a new pass in that worktree would put two agents in
+  // one directory (docs/adr/0012).
+  //
+  // Wrapped because housekeeping is never the reason Handella does not come
+  // up. Everything below this line is what the Handler actually asked for, and
+  // a reap that threw — `ps` gone, a signal refused, a database that would not
+  // take the write — would otherwise take the dashboard down with it and leave
+  // the leftover running anyway.
+  try {
+    const reaped = await reconciler.reapProcesses()
+    if (reaped.killed.length > 0) {
+      app.log.warn(
+        { pids: reaped.killed.map((record) => record.pid) },
+        'Stopped the Codex processes a restart left behind',
+      )
+    }
+    if (reaped.reused.length > 0) {
+      app.log.warn(
+        { pids: reaped.reused.map((record) => record.pid) },
+        'Left alone the recorded pids that now belong to something else',
+      )
+    }
+  } catch (error) {
+    app.log.error(
+      { err: error },
+      'Could not reap the Codex processes a restart left behind',
+    )
+  }
+
   scheduler.start()
+  // Its first pass reports the worktrees no job claims, which is why nothing
+  // asks for that here: it is not ordered against anything, and a synchronous
+  // walk of the worktree root is not worth making the Handler wait for.
+  reconciler.start()
 
   app.addHook('onClose', async () => {
     scheduler.stop()
-    await scheduler.whenIdle()
+    reconciler.stop()
+    await Promise.all([scheduler.whenIdle(), reconciler.whenIdle()])
     database.close()
   })
 

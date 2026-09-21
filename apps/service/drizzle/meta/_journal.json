@@ -43,6 +43,13 @@
       "when": 1789929830850,
       "tag": "0005_heavy_jamie_braddock",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1789987837381,
+      "tag": "0006_groovy_blink",
+      "breakpoints": true
     }
   ]
 }

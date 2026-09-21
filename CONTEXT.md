@@ -155,6 +155,34 @@ at that Job's Canonical Branch. One per Job, created at Dispatch and kept until
 its pull request is confirmed merged.
 _Avoid_: Workspace, sandbox, checkout
 
+**Reconciliation**:
+Making the machine agree with the database. The database says a process is
+running, a Worktree belongs to a Job, a pull request is still open; a crash, a
+machine restart or a merge the Handler made on github.com can falsify any of
+them, and none of the three announce itself. It is the one part of Handella that
+runs on a timer, which is why it is not the scheduler (docs/adr/0013).
+_Avoid_: Sync, cleanup, garbage collection, sweep
+
+**Orphan**:
+A Codex process or a Worktree that outlived whatever Handella knew it by: a pid
+in a row no live pass is behind, a directory under the Worktree root that no Job
+row names. Being one says nothing about whose it is, which is why
+Reconciliation kills an Orphan process and only reports an Orphan Worktree —
+a process it can prove is the one it spawned, a directory it cannot prove is
+not the Handler's.
+_Avoid_: Stale, leaked, zombie, dangling
+
+Note: the scheduler uses "orphaned" for something else and narrower — a Job
+mid-implementation with no live pass behind it, which is the ordinary state
+between repair turns rather than residue.
+
+**Overlap**:
+Two live Jobs whose approved Plans name the same path. Predicted from what the
+planners said they would touch and never from what the turns do, so it is a
+warning the Handler reads and not a fact Handella acts on: it never delays
+either Job (docs/adr/0014).
+_Avoid_: Conflict, collision, contention
+
 **Queue Position**:
 Where a Job sits among those waiting for a Slot. Set by the Handler, who may
 reorder the queue; a Job with no position waits behind every Job that has one.

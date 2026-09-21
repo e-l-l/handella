@@ -377,6 +377,40 @@ describe('stopping a pass', () => {
   })
 })
 
+describe('the record of the Codex process a pass started', () => {
+  it('closes the row when the pass ends', async () => {
+    const context = createTestContext()
+    await aDispatchedQueue(context, 1)
+    const codex = createFakeCodexAdapter()
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    // A row this pass left open is a pid a later startup would establish
+    // identity against and, if the operating system had handed the number out
+    // again to a Codex of the Handler's own, signal.
+    expect(codex.pids).toHaveLength(1)
+    expect(context.store.listLiveCodexProcesses()).toEqual([])
+  })
+
+  it('closes it for a pass that failed as well as one that finished', async () => {
+    const context = createTestContext()
+    await aDispatchedQueue(context, 1)
+    const codex = createFakeCodexAdapter()
+    codex.failNextWith(new Error('Codex could not plan'))
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    expect(codex.pids).toHaveLength(1)
+    expect(context.store.listLiveCodexProcesses()).toEqual([])
+  })
+})
+
 describe('when a job’s session becomes visible', () => {
   it('records it while the pass is still running, not when it ends', async () => {
     const context = createTestContext()

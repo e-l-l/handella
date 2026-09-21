@@ -21,6 +21,18 @@ export class DomainError extends Error {
   }
 }
 
+/**
+ * Whatever this error said, for the writes that have to record something the
+ * Handler will read.
+ *
+ * Here because three components need it and all three of them are wording a
+ * failure for the same audience: a reason on a job, a body on an attention
+ * item, a line in a log. `stderrOf` in the adapters was centralised for this
+ * reason already; this is the domain's half of it.
+ */
+export const messageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error)
+
 export const jobNotFound = (jobId: string): DomainError =>
   new DomainError('job_not_found', 404, `No job with id ${jobId}`)
 

@@ -37,6 +37,16 @@ export interface PlanningRequest {
    * Called once per pass, and not at all by a pass that never got that far.
    */
   onSessionId(sessionId: string): void
+  /**
+   * Told the pid of the Codex process the moment it exists.
+   *
+   * Every pass reports one, because a pid nobody wrote down is a process no
+   * restart can find again: the pass that started it is the only thing holding
+   * a handle, and a crash takes that handle with it. What the caller does with
+   * it is keep a row until the pass ends, so Reconciliation can reap what this
+   * process left behind (docs/adr/0012).
+   */
+  onSpawn(pid: number): void
   /** The procedure the plan will be executed by, so it can be planned against. */
   runbook: string
   /**
@@ -85,6 +95,16 @@ export interface ImplementationRequest {
   onLine(text: string): void
   /** The readable subset of that stream, as it happens rather than at the end. */
   onMilestone(milestone: MilestoneInput): void
+  /**
+   * Told the pid of the Codex process the moment it exists.
+   *
+   * Every pass reports one, because a pid nobody wrote down is a process no
+   * restart can find again: the pass that started it is the only thing holding
+   * a handle, and a crash takes that handle with it. What the caller does with
+   * it is keep a row until the pass ends, so Reconciliation can reap what this
+   * process left behind (docs/adr/0012).
+   */
+  onSpawn(pid: number): void
   /** The plan the Handler approved, quoted into the first turn's brief. */
   plan: PlanContent
   /** The Runbook Snapshot's text — what this job approved against, not today's. */

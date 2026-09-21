@@ -17,6 +17,20 @@ export interface AddWorktreeInput {
   worktreePath: string
 }
 
+/**
+ * A worktree git itself knows about, which is not the same set as the
+ * directories on disk: git keeps a registration after a directory is deleted,
+ * and a cut that died between making the directory and registering it leaves
+ * a directory git never heard of. Reconciliation reads both.
+ */
+export interface WorktreeListing {
+  /** Null for a detached HEAD, which a Job's worktree should never be. */
+  branch: string | null
+  /** Whether this is the checkout itself rather than a worktree cut from it. */
+  isMain: boolean
+  path: string
+}
+
 export interface GitAdapter {
   /**
    * Creates the Canonical Branch and checks it out in its own directory.
@@ -32,7 +46,25 @@ export interface GitAdapter {
    * cuts its own branch inside the worktree is invisible without this.
    */
   headBranch(worktreePath: string): Promise<string>
+  /**
+   * Whether the worktree holds nothing uncommitted, untracked included.
+   *
+   * Asked before a worktree is removed after a merge: work the agent left
+   * behind never reached the pull request, so deleting the directory would be
+   * the one way Handella could destroy something (docs/adr/0013).
+   */
+  isWorktreeClean(worktreePath: string): Promise<boolean>
   /** What Intake offers as base branches, in place of Phase 3's guesses. */
   listRemoteBranches(repositoryPath: string): Promise<string[]>
+  /** Every worktree this checkout has registered, itself included. */
+  listWorktrees(repositoryPath: string): Promise<WorktreeListing[]>
+  /**
+   * Drops the registrations of worktrees whose directories are already gone.
+   *
+   * Metadata only, which is what makes it safe to do unprompted: it deletes
+   * git's record of a directory that no longer exists and can never delete a
+   * directory that does.
+   */
+  pruneWorktrees(repositoryPath: string): Promise<void>
   removeWorktree(repositoryPath: string, worktreePath: string): Promise<void>
 }

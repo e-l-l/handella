@@ -1,4 +1,5 @@
 import {
+  isAwaitingMerge,
   isTerminalJobState,
   legalTransitionsFrom,
   type Job,
@@ -6,6 +7,7 @@ import {
 import { useMutation } from '@tanstack/react-query'
 
 import {
+  checkJobMerge,
   dispatchJob,
   openJobTerminal,
   resumeJob,
@@ -66,12 +68,17 @@ export function JobActions({
   // Nothing to refresh: this puts a window on the Handler's screen and changes
   // no record, so the only thing it can report back is that it could not.
   const terminal = useMutation({ mutationFn: () => openJobTerminal(job.id) })
+  const checkMerge = useMutation({
+    mutationFn: () => checkJobMerge(job.id),
+    onSettled: refresh,
+  })
 
   const pending =
     move.isPending ||
     suspend.isPending ||
     resume.isPending ||
-    dispatch.isPending
+    dispatch.isPending ||
+    checkMerge.isPending
   const isPanel = variant === 'panel'
   const canDispatch = job.state === 'intake'
   // `intake -> queued` is Dispatch's edge, not a plain move: it is offered as
@@ -85,6 +92,7 @@ export function JobActions({
     suspend.error ??
     resume.error ??
     dispatch.error ??
+    checkMerge.error ??
     terminal.error
 
   return (
@@ -148,6 +156,21 @@ export function JobActions({
             Resume
           </button>
         )}
+
+        {/* Reconciliation asks every few minutes anyway; this is for the
+            Handler who has just merged and does not want to wait for it. On
+            the panel alone, because a row offers what the list was opened
+            for and this is a question about one job rather than a move. */}
+        {isPanel && isAwaitingMerge(job) ? (
+          <button
+            className={secondaryButtonClass}
+            disabled={pending}
+            onClick={() => checkMerge.mutate()}
+            type="button"
+          >
+            {checkMerge.isPending ? 'Asking GitHub…' : 'Check merge'}
+          </button>
+        ) : null}
 
         {/* Only once there is a worktree to stand in, which Dispatch cuts. It
             is offered for every dispatched job rather than only a running one:

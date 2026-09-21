@@ -104,6 +104,14 @@ export const dispatchJob = async (jobId: string): Promise<Job> =>
   request(`/api/jobs/${jobId}/dispatch`, { method: 'POST' })
 
 /**
+ * Asks now rather than waiting for Reconciliation's timer. Answers with the
+ * Job either way: a pull request nobody has merged yet comes back unchanged,
+ * which is an answer and not a refusal.
+ */
+export const checkJobMerge = async (jobId: string): Promise<Job> =>
+  request(`/api/jobs/${jobId}/check-merge`, { method: 'POST' })
+
+/**
  * Dispatch, answered with why it was refused rather than by throwing. `null`
  * is the queue; a string is the service's own sentence about why not.
  *
