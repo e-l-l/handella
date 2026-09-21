@@ -21,6 +21,9 @@ export interface DispatchOutcome {
   /**
    * Resolves once the worktree exists, or once the claim has been given back.
    * Rejects only if the compensating write itself fails, which is a bug.
+   *
+   * It may wait first: cuts in one checkout are taken one at a time, so a Job
+   * dispatched alongside others is queued behind them before git runs for it.
    */
   worktree: Promise<Job>
 }
@@ -94,6 +97,33 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
     return store.recordWorktree({ jobId: job.id, worktreePath })
   }
 
+  /**
+   * One cut at a time per checkout. `git fetch` and `git worktree add` both
+   * take locks inside the repository they run in, and Intake dispatches a
+   * whole Selection at once — two cuts racing in one checkout is the ordinary
+   * case now rather than a Handler clicking twice. Keyed by the repository
+   * path, so different checkouts still cut alongside each other.
+   *
+   * The chain is the whole of the serialisation, so nothing may break it: what
+   * is stored as the tail is a promise that cannot reject. `cutWorktree`
+   * compensates rather than throwing, and the `catch` is for the bug its own
+   * doc comment describes.
+   */
+  const cuts = new Map<string, Promise<unknown>>()
+
+  const queueCut = (job: Job, repositoryPath: string): Promise<Job> => {
+    const after = cuts.get(repositoryPath) ?? Promise.resolve()
+    const cut = after.then(() => cutWorktree(job, repositoryPath))
+
+    // One entry per checkout, each replaced by the cut behind it, so the map
+    // is as big as the Handler's repository list and no bigger.
+    cuts.set(
+      repositoryPath,
+      cut.catch(() => undefined),
+    )
+    return cut
+  }
+
   return {
     async dispatch(jobId) {
       const job = store.getJob(jobId)
@@ -124,7 +154,7 @@ export function createDispatcher(options: DispatcherOptions): Dispatcher {
 
       return {
         job: claim.job,
-        worktree: cutWorktree(claim.job, claim.repository.path),
+        worktree: queueCut(claim.job, claim.repository.path),
       }
     },
   }

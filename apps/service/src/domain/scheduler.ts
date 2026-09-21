@@ -115,16 +115,26 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
         feedback,
         issue,
         job,
+        // Written the moment Codex opens the session rather than when the pass
+        // ends. A first pass reasons for minutes, and until this lands the job
+        // has no session the Handler can open and no conversation a failed
+        // pass could be retried into — which is the whole of what a job in
+        // `planning` has to show for itself.
+        //
+        // Only when it is news. A revision resumes the session the job is
+        // already holding, and the write is not free: it bumps `updatedAt`
+        // and announces a `job.changed` every dashboard then refetches on.
+        onSessionId: (sessionId) => {
+          if (sessionId !== job.codexSessionId) {
+            store.recordCodexSession({ jobId: job.id, sessionId })
+          }
+        },
         runbook: runbook.content,
         sessionId: job.codexSessionId ?? undefined,
         signal: abort.signal,
         worktreePath: job.worktreePath,
       })
 
-      // Recorded before the plan, so a session is never lost to a failure in
-      // the write that follows it: without the id the next revision has no
-      // conversation to continue and the job cannot be revised at all.
-      store.recordCodexSession({ jobId: job.id, sessionId: result.sessionId })
       store.createPlanVersion({ content: result.content, jobId: job.id })
       store.transitionJob({
         actor: 'system',

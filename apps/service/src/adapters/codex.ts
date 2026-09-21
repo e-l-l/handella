@@ -24,6 +24,19 @@ export interface PlanningRequest {
    */
   issue: LinearIssueSummary
   job: Job
+  /**
+   * The session, the moment Codex opens it rather than when the pass ends.
+   *
+   * A first pass reports its id within seconds of starting and then reasons
+   * for minutes, so a caller that waits for the result has nothing to offer a
+   * Handler for the whole of the pass they most want to look inside. It is
+   * also what makes a session survive a pass that fails: without this, a
+   * planning pass that dies takes its conversation with it and the retry
+   * starts a fresh one.
+   *
+   * Called once per pass, and not at all by a pass that never got that far.
+   */
+  onSessionId(sessionId: string): void
   /** The procedure the plan will be executed by, so it can be planned against. */
   runbook: string
   /**
@@ -40,8 +53,9 @@ export interface PlanningRequest {
 export interface PlanningResult {
   content: PlanContent
   /**
-   * The session this pass ran in, new or continued. Recorded against the job,
-   * because the next revision and Phase 6's implementation both resume it.
+   * The session this pass ran in, new or continued. The same id `onSessionId`
+   * already reported: it is repeated here so a caller that only wants the
+   * ending does not have to have been watching.
    */
   sessionId: string
 }

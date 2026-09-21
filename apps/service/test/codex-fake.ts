@@ -118,6 +118,12 @@ export const createFakeCodexAdapter = (
     },
     plan(request): Promise<PlanningResult> {
       calls.push(request)
+      const sessionId = request.sessionId ?? options.sessionId ?? 'session-1'
+
+      // Announced before anything else, the way the real adapter announces it:
+      // Codex opens the thread and then reasons, so a pass that fails has still
+      // told its caller which session it failed in.
+      request.onSessionId(sessionId)
 
       if (nextFailure !== undefined) {
         const failure = nextFailure
@@ -129,7 +135,7 @@ export const createFakeCodexAdapter = (
         content: aPlanContent(),
         // A resumed pass stays in the session it resumed, which is what makes
         // "the revision ran in the same session" assertable.
-        sessionId: request.sessionId ?? options.sessionId ?? 'session-1',
+        sessionId,
       })
     },
   }
@@ -152,8 +158,12 @@ export const aHeldCodex = () => {
       return inner.implement(request)
     },
     plan: async (request) => {
+      // Announced before the wait rather than after it. The real adapter has a
+      // session id seconds in and an answer minutes later, and a held pass is
+      // how a test looks at a job during that stretch.
+      request.onSessionId(request.sessionId ?? 'session-1')
       await held
-      return inner.plan(request)
+      return inner.plan({ ...request, onSessionId: () => {} })
     },
   }
 

@@ -1,5 +1,6 @@
 import { Link } from 'react-router'
 
+import { JobActions } from '../components/JobActions.tsx'
 import { JobRow } from '../components/JobRow.tsx'
 import { QueuePanel } from '../components/QueuePanel.tsx'
 import { SkeletonList } from '../components/Skeleton.tsx'
@@ -47,6 +48,11 @@ export function JobsPage() {
         <ul className="flex flex-col gap-[9px]">
           {all.map((job) => (
             <JobRow
+              // The reason the list has actions at all: dispatching a job, or
+              // stopping one, or standing in its worktree used to mean opening
+              // it first, and the job page is not where those decisions are
+              // made — the list is.
+              actions={<JobActions job={job} variant="row" />}
               job={job}
               key={job.id}
               meta={

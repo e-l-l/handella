@@ -59,6 +59,12 @@ Turning an Actionable Issue, existing or newly created, into a Job. It precedes
 Dispatch and commits nothing but the Job record.
 _Avoid_: Import, ingest, triage
 
+Note: the Intake screen runs Dispatch straight after itself, per issue, so work
+the Handler has just taken reaches the queue in one submission. The two stay
+separate underneath — one request commits the Job, the next claims the branch —
+so either may be refused without the other being undone, and "Create only"
+stops after the first.
+
 **Selection**:
 The Actionable Issues the Handler has picked to take, each with its Choices,
 before any Job exists. It outlives leaving the Intake screen and is emptied
@@ -113,7 +119,9 @@ _Avoid_: Checklist, template
 The conversation a Job's planning and implementation happen inside, kept so
 Handella can return to it. A revision is a turn in the session that produced
 the plan it revises, rather than a fresh briefing, and Phase 6 implements in
-the session that planned.
+the session that planned. The Handler can return to it too: "Open session"
+resumes it in a terminal, which makes them a second voice in a conversation
+Handella's next pass continues from (docs/adr/0011).
 _Avoid_: Thread, run, context
 
 **Attempt**:

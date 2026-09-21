@@ -21,7 +21,9 @@ import {
 import { createReadStream, statSync } from 'node:fs'
 import { Transform } from 'node:stream'
 
+import type { TerminalOpener } from '../adapters/terminal.js'
 import type { Dispatcher } from '../domain/dispatch.js'
+import { worktreeNotCut } from '../domain/errors.js'
 import type { Store } from '../domain/store.js'
 
 const JobIdParamsSchema = Type.Object({ jobId: Type.String() })
@@ -78,8 +80,9 @@ const errorResponses = {
 export const jobRoutes: FastifyPluginCallbackTypebox<{
   dispatcher: Dispatcher
   store: Store
+  terminal: TerminalOpener
 }> = (app, options, done) => {
-  const { dispatcher, store } = options
+  const { dispatcher, store, terminal } = options
 
   /**
    * The whole order rather than one job's position: reordering a list by
@@ -134,6 +137,49 @@ export const jobRoutes: FastifyPluginCallbackTypebox<{
       })
 
       return reply.code(202).send(outcome.job)
+    },
+  )
+
+  /**
+   * The Job's Codex session, opened in a terminal on the Handler's machine.
+   *
+   * What it answers is "what is going on in there": Milestones and the Attempt
+   * log are a summary and a flattening of a conversation, and the conversation
+   * is what the Handler wants when a pass is taking longer than it should. A
+   * Job that has not planned yet has no session, and the window is then a
+   * shell standing in the Worktree — which is also all a Worktree question
+   * needs.
+   *
+   * Resuming makes the Handler a second voice in a session Handella resumes
+   * too, including while a pass is running. That is the trade they asked for
+   * and docs/adr/0011 is why; the dashboard says so beside the button.
+   *
+   * A POST and not a GET for the reason `choose-path` is one: it puts a window
+   * in front of someone rather than reading anything. It carries no body, so
+   * what keeps another page from opening terminals on the Handler's machine is
+   * the same-origin hook in `app.ts` (ADR 0009) and not the method.
+   */
+  app.post(
+    '/api/jobs/:jobId/terminal',
+    {
+      schema: {
+        params: JobIdParamsSchema,
+        response: {
+          204: Type.Null(),
+          ...errorResponses,
+          502: ApiErrorSchema,
+        },
+      },
+    },
+    async (request, reply) => {
+      const job = store.getJob(request.params.jobId)
+      if (job.worktreePath === null) throw worktreeNotCut(job.id)
+
+      await terminal.open({
+        path: job.worktreePath,
+        sessionId: job.codexSessionId,
+      })
+      return reply.code(204).send(null)
     },
   )
 

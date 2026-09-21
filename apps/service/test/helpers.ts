@@ -11,6 +11,7 @@ import { aPlanContent, createFakeCodexAdapter } from './codex-fake.js'
 import { createFakeFolderPicker } from './folders-fake.js'
 import { createFakeGitAdapter } from './git-fake.js'
 import { createFakeGitHubAdapter } from './github-fake.js'
+import { createFakeTerminalOpener } from './terminal-fake.js'
 import {
   aLinearIssue,
   aLinearIssueLink,
@@ -169,6 +170,7 @@ export async function buildTestApp(
     linear,
     statusSource: healthyStatusSource,
     store: context.store,
+    terminal: createFakeTerminalOpener(),
     version: '0.1.0',
     ...appOverrides,
   })
@@ -191,6 +193,7 @@ export * from './folders-fake.js'
 export * from './git-fake.js'
 export * from './github-fake.js'
 export * from './linear-fake.js'
+export * from './terminal-fake.js'
 
 export const anIntakeJob = (overrides: Partial<CreateJob> = {}): CreateJob => ({
   source: 'adhoc',

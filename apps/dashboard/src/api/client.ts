@@ -11,6 +11,10 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** The service's own sentence where there is one, and a plain one where not. */
+export const messageOf = (error: unknown, fallback: string): string =>
+  error instanceof ApiRequestError ? error.message : fallback
+
 interface RequestOptions {
   body?: unknown
   /** What to say when the service fails without a readable body. */
@@ -62,7 +66,7 @@ export async function request<Result>(
   if (!response.ok) await throwApiError(response, options.fallbackMessage)
 
   // A 204 carries no body, and parsing one as JSON throws. Deleting a
-  // repository is the only such response today.
+  // repository and opening a terminal both answer this way.
   if (response.status === 204) {
     return undefined as Result
   }

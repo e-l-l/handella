@@ -12,7 +12,7 @@ import type {
 import { useQueryClient } from '@tanstack/react-query'
 
 import { attentionKeys } from './attention.ts'
-import { request, requestText } from './client.ts'
+import { messageOf, request, requestText } from './client.ts'
 
 export const jobKeys = {
   all: ['jobs'] as const,
@@ -102,6 +102,39 @@ export const resumeJob = async (jobId: string): Promise<Job> =>
  */
 export const dispatchJob = async (jobId: string): Promise<Job> =>
   request(`/api/jobs/${jobId}/dispatch`, { method: 'POST' })
+
+/**
+ * Dispatch, answered with why it was refused rather than by throwing. `null`
+ * is the queue; a string is the service's own sentence about why not.
+ *
+ * Shared by every caller that dispatches straight after creating something:
+ * the record it just made has committed by then, so a refusal here is a job
+ * to be dispatched again rather than a submission that never happened, and
+ * one of these call sites reporting it as the latter is the drift this
+ * exists to stop.
+ */
+export const dispatchOrReason = async (
+  jobId: string,
+): Promise<string | null> => {
+  try {
+    await dispatchJob(jobId)
+    return null
+  } catch (error) {
+    return messageOf(error, 'That job could not be dispatched.')
+  }
+}
+
+/**
+ * Opens a terminal on the machine the service is running on: the job's Codex
+ * session if it has one, and otherwise a shell in its worktree. 204 and
+ * nothing back — what it produces is a window, and the only thing it can tell
+ * the dashboard is that there was no window to open.
+ */
+export const openJobTerminal = async (jobId: string): Promise<void> =>
+  request(`/api/jobs/${jobId}/terminal`, {
+    fallbackMessage: 'No terminal could be opened for that job.',
+    method: 'POST',
+  })
 
 export const reorderQueue = async (jobIds: string[]): Promise<Job[]> =>
   request('/api/queue/order', { body: { jobIds }, method: 'POST' })

@@ -15,6 +15,7 @@ import { aLinearJob as aJob, aStatus } from './test/fixtures.ts'
 import { renderAt } from './test/renderApp.tsx'
 import {
   jsonResponse as json,
+  postsTo,
   stubApi as stubSharedApi,
 } from './test/stubApi.ts'
 
@@ -51,6 +52,10 @@ const anOffer = (overrides: Partial<IntakeIssue> = {}): IntakeIssue => {
 
 interface Routes {
   configured?: boolean
+  /** Stands for the service being down, which is not the same as having no key. */
+  statusUnreachable?: boolean
+  /** What Dispatch answers with, when a test needs the second half to fail. */
+  dispatchFailure?: { code: string; message: string }
   intakeFailures?: Record<string, { code: string; message: string }>
   issues?: LinearIssueSummary[]
   jobs?: Job[]
@@ -83,6 +88,15 @@ const stubApi = (routes: Routes = {}) =>
       },
     }),
     extra: (url, init) => {
+      // What the dev proxy answers when nothing is listening on the service
+      // port: a 500 whose body is not the service's own error record.
+      if (url === '/api/status' && routes.statusUnreachable === true) {
+        return Promise.resolve(
+          new Response('Error: connect ECONNREFUSED 127.0.0.1:4310', {
+            status: 500,
+          }),
+        )
+      }
       if (url.startsWith('/api/intake/linear/issues')) {
         if (url.includes('cursor=')) {
           return json({ issues: routes.nextPage ?? [], nextCursor: null })
@@ -111,6 +125,13 @@ const stubApi = (routes: Routes = {}) =>
       if (url === '/api/intake/base-branches') {
         return json({ defaultBranch: 'dev', recent: ['main'] })
       }
+      if (
+        url.endsWith('/dispatch') &&
+        init?.method === 'POST' &&
+        routes.dispatchFailure !== undefined
+      ) {
+        return json(routes.dispatchFailure, 409)
+      }
       if (url === '/api/intake/linear' && init?.method === 'POST') {
         const body = JSON.parse(String(init.body)) as { issueId: string }
         const failure = routes.intakeFailures?.[body.issueId]
@@ -123,13 +144,6 @@ const stubApi = (routes: Routes = {}) =>
       return undefined
     },
   })
-
-const postsTo = (fetchMock: ReturnType<typeof stubApi>, path: string) =>
-  fetchMock.mock.calls
-    .filter(([url, init]) => String(url) === path && init?.method === 'POST')
-    .map(
-      ([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>,
-    )
 
 beforeEach(() => {
   installFakeEventSource()
@@ -157,6 +171,34 @@ describe('an installation with no Linear API key', () => {
         String(url).startsWith('/api/intake/linear/issues'),
       ),
     ).toHaveLength(0)
+  })
+})
+
+describe('an installation whose local service is down', () => {
+  it('says the service is unreachable rather than blaming the key', async () => {
+    stubApi({ statusUnreachable: true })
+    renderAt('/intake')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Service unavailable',
+    )
+    expect(screen.queryByText('Linear is not configured')).toBeNull()
+    expect(screen.queryByText(/HANDELLA_LINEAR_API_KEY/)).toBeNull()
+  })
+
+  it('offers a retry that asks the service again', async () => {
+    const fetchMock = stubApi({ statusUnreachable: true })
+    renderAt('/intake')
+
+    await screen.findByRole('alert')
+    const asked = () =>
+      fetchMock.mock.calls.filter(([url]) => String(url) === '/api/status')
+        .length
+    const before = asked()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }))
+
+    await waitFor(() => expect(asked()).toBeGreaterThan(before))
   })
 })
 
@@ -394,7 +436,9 @@ describe('creating jobs from a selection', () => {
       'main',
     )
 
-    await userEvent.click(screen.getByRole('button', { name: 'Create 2 jobs' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create and dispatch 2 jobs' }),
+    )
 
     await waitFor(() => {
       expect(postsTo(fetchMock, '/api/intake/linear')).toEqual([
@@ -414,12 +458,72 @@ describe('creating jobs from a selection', () => {
     })
   })
 
+  it('dispatches each job it creates, so the work lands in the queue', async () => {
+    const fetchMock = stubApi()
+    renderAt('/intake')
+
+    await userEvent.click(await screen.findByLabelText('Select ENG-412'))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create and dispatch job' }),
+    )
+
+    expect(
+      await screen.findByText('Job created and queued.'),
+    ).toBeInTheDocument()
+    expect(postsTo(fetchMock, `/api/jobs/${aJob().id}/dispatch`)).toHaveLength(
+      1,
+    )
+  })
+
+  it('leaves the job in intake when the Handler asks for that instead', async () => {
+    const fetchMock = stubApi()
+    renderAt('/intake')
+
+    await userEvent.click(await screen.findByLabelText('Select ENG-412'))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create only, without dispatching' }),
+    )
+
+    expect(
+      await screen.findByText('Job created, waiting in intake.'),
+    ).toBeInTheDocument()
+    expect(postsTo(fetchMock, '/dispatch')).toHaveLength(0)
+  })
+
+  it('keeps a job whose dispatch was refused, rather than reporting it as untaken', async () => {
+    stubApi({
+      dispatchFailure: {
+        code: 'canonical_branch_claimed',
+        message: 'ell/eng-412-fix-flaky-login-test is already claimed',
+      },
+    })
+    renderAt('/intake')
+
+    await userEvent.click(await screen.findByLabelText('Select ENG-412'))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create and dispatch job' }),
+    )
+
+    expect(
+      await screen.findByText(
+        /ell\/eng-412-fix-flaky-login-test is already claimed/,
+      ),
+    ).toBeInTheDocument()
+    // The Job holds the issue now, whatever happened to its Dispatch, so the
+    // Selection lets go of it rather than offering to take it again.
+    expect(
+      screen.queryByRole('group', { name: 'Work class for ENG-412' }),
+    ).toBeNull()
+  })
+
   it('never sends a canonical branch, because Linear owns it', async () => {
     const fetchMock = stubApi()
     renderAt('/intake')
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
-    await userEvent.click(screen.getByRole('button', { name: 'Create job' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create and dispatch job' }),
+    )
 
     await waitFor(() => {
       const [posted] = postsTo(fetchMock, '/api/intake/linear')
@@ -454,7 +558,9 @@ describe('creating jobs from a selection', () => {
     expect(
       await screen.findByText(/Linear has not named a branch for this issue/),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Create job' })).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: 'Create and dispatch job' }),
+    ).toBeDisabled()
   })
 
   it('keeps the good ones when one issue is already taken', async () => {
@@ -471,9 +577,13 @@ describe('creating jobs from a selection', () => {
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     await userEvent.click(screen.getByLabelText('Select ENG-500'))
-    await userEvent.click(screen.getByRole('button', { name: 'Create 2 jobs' }))
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Create and dispatch 2 jobs' }),
+    )
 
-    expect(await screen.findByText('Job created.')).toBeInTheDocument()
+    expect(
+      await screen.findByText('Job created and queued.'),
+    ).toBeInTheDocument()
     expect(
       await screen.findByText(
         'ENG-500 is already the Linear issue for job abc',
@@ -501,7 +611,7 @@ describe('ad hoc intake', () => {
       ),
     )
     await userEvent.click(
-      within(form).getByRole('button', { name: 'Create issue and job' }),
+      within(form).getByRole('button', { name: 'Create and dispatch' }),
     )
 
     await waitFor(() => {
@@ -548,7 +658,7 @@ describe('an installation with no repository', () => {
       'Retire the legacy exporter',
     )
     const submit = within(form).getByRole('button', {
-      name: 'Create issue and job',
+      name: 'Create and dispatch',
     })
 
     expect(submit).toBeDisabled()
@@ -645,7 +755,7 @@ describe('coming back to intake', () => {
     await leaveAndReturn()
 
     expect(
-      await screen.findByRole('button', { name: 'Create 2 jobs' }),
+      await screen.findByRole('button', { name: 'Create and dispatch 2 jobs' }),
     ).toBeEnabled()
     expect(screen.getByLabelText('Base branch for ENG-500')).toHaveValue('main')
     expect(
@@ -676,7 +786,9 @@ describe('coming back to intake', () => {
     expect(issueRequests(fetchMock)).toHaveLength(asked + 1)
     // Still selected, and refused: a Selection is not silently emptied by the
     // list moving under it.
-    expect(screen.getByRole('button', { name: 'Create job' })).toBeDisabled()
+    expect(
+      screen.getByRole('button', { name: 'Create and dispatch job' }),
+    ).toBeDisabled()
   })
 
   it('lets a selection go once its issue has left the list', async () => {

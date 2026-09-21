@@ -323,6 +323,8 @@ interface PassRequest {
   label: string
   onLine?: ((text: string) => void) | undefined
   onMilestone?: ((milestone: MilestoneInput) => void) | undefined
+  /** Told the moment Codex opens the thread, rather than when the pass ends. */
+  onSessionId?: ((sessionId: string) => void) | undefined
   prompt: string
   redact: Redactor
   signal: AbortSignal
@@ -449,7 +451,14 @@ const runPass = (request: PassRequest): Promise<PassEnding> =>
 
       if (record['type'] === 'thread.started') {
         const id = record['thread_id']
-        if (typeof id === 'string') sessionId = id
+        // Announced as well as kept. Codex sends this within seconds and then
+        // reasons for minutes, and a caller holding the id for that whole
+        // stretch is what lets a Handler open the session while it is running
+        // rather than once it has stopped.
+        if (typeof id === 'string') {
+          sessionId = id
+          request.onSessionId?.(id)
+        }
         return
       }
 
@@ -658,6 +667,7 @@ export const createCodexAdapter = (
         ],
         cwd: input.worktreePath,
         label: 'Planning',
+        onSessionId: input.onSessionId,
         prompt: planningPrompt(input),
         redact: options.redact,
         signal: input.signal,

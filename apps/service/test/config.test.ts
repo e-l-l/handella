@@ -20,6 +20,37 @@ afterEach(() => {
   }
 })
 
+describe('the terminal application', () => {
+  it('is absent until the Handler names one, so Handella picks', () => {
+    const config = loadConfig({
+      environment: {},
+      rootDirectory: temporaryRoot(),
+    })
+
+    expect(config.terminalApp).toBeUndefined()
+  })
+
+  it('is a setting rather than an unknown key when it is in .env', () => {
+    const root = temporaryRoot()
+    const environmentPath = join(root, '.env')
+    writeFileSync(environmentPath, 'HANDELLA_TERMINAL_APP=iTerm\n')
+    chmodSync(environmentPath, 0o600)
+
+    const config = loadConfig({ environment: {}, rootDirectory: root })
+
+    expect(config.terminalApp).toBe('iTerm')
+  })
+
+  it('reads a blank value as no preference rather than as an empty name', () => {
+    const config = loadConfig({
+      environment: { HANDELLA_TERMINAL_APP: '   ' },
+      rootDirectory: temporaryRoot(),
+    })
+
+    expect(config.terminalApp).toBeUndefined()
+  })
+})
+
 describe('the optional Linear API key', () => {
   it('is absent when the Handler has not set one', () => {
     const config = loadConfig({

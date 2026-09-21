@@ -16,6 +16,7 @@ const secretEnvironmentKeys = new Set(['HANDELLA_LINEAR_API_KEY'])
 const allowedEnvironmentKeys = new Set([
   'HANDELLA_DATABASE_PATH',
   'HANDELLA_PORT',
+  'HANDELLA_TERMINAL_APP',
   ...secretEnvironmentKeys,
 ])
 
@@ -80,6 +81,13 @@ export interface AppConfig {
    */
   secretValues: readonly string[]
   /**
+   * The terminal application "Open terminal" opens, when the Handler has named
+   * one. Absent is not a missing setting: Handella then takes the first of the
+   * terminals it knows that is installed, and only a Handler whose preference
+   * is not that one has anything to say here.
+   */
+  terminalApp: string | undefined
+  /**
    * Where Dispatch cuts worktrees. Beside the database rather than inside the
    * target checkout, and deliberately not configurable — see
    * docs/adr/0006-fixed-worktree-root.md.
@@ -141,12 +149,13 @@ function parsePort(value: string | undefined): number {
 }
 
 /**
- * Unlike the database path, an empty value here is not a failure. The Handler
- * has simply not finished setting Linear up, and the dashboard says so;
- * refusing to start would take the rest of Handella down with an optional
- * integration.
+ * A setting the Handler may leave out, where blank and absent say the same
+ * thing: they have not finished setting something up, or have nothing to say
+ * about it. Unlike the database path, neither is a failure — refusing to start
+ * would take the whole of Handella down with an optional integration, and the
+ * dashboard says what is missing.
  */
-function parseLinearApiKey(value: string | undefined): string | undefined {
+function parseOptional(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed === undefined || trimmed === '' ? undefined : trimmed
 }
@@ -188,11 +197,12 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     databasePath,
     dashboardPath: join(rootDirectory, 'apps/dashboard/dist'),
     host: '127.0.0.1',
-    linearApiKey: parseLinearApiKey(valueFor('HANDELLA_LINEAR_API_KEY')),
+    linearApiKey: parseOptional(valueFor('HANDELLA_LINEAR_API_KEY')),
     port: parsePort(valueFor('HANDELLA_PORT')),
     logRoot: join(dirname(databasePath), 'logs'),
     repositoryRoot: rootDirectory,
     secretValues,
+    terminalApp: parseOptional(valueFor('HANDELLA_TERMINAL_APP')),
     worktreeRoot: join(dirname(databasePath), 'worktrees'),
   }
 }

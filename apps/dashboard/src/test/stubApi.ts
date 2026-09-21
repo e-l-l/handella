@@ -10,7 +10,7 @@ import type {
 } from '@handella/contracts'
 import { vi } from 'vitest'
 
-import { aRepository, aRunbookVersion, aStatus } from './fixtures.ts'
+import { aJob, aRepository, aRunbookVersion, aStatus } from './fixtures.ts'
 
 export const jsonResponse = (body: unknown, status = 200): Promise<Response> =>
   Promise.resolve(
@@ -82,6 +82,14 @@ export const stubApi = (routes: ApiRoutes = {}) => {
     }
 
     if (url === '/api/jobs') return jsonResponse(routes.jobs ?? [])
+    // 202 and 204, the way the service answers them: dispatch has committed
+    // the claim but not the worktree, and opening a terminal commits nothing
+    // at all. Both sit above the `/api/jobs/` catch-all, which is prefix
+    // matched and would otherwise swallow them.
+    if (url.endsWith('/dispatch') && method === 'POST')
+      return jsonResponse(aJob({ state: 'queued' }), 202)
+    if (url.endsWith('/terminal') && method === 'POST')
+      return jsonResponse(null, 204)
     if (url.endsWith('/transitions')) return jsonResponse([])
     if (url.endsWith('/plan-versions'))
       return jsonResponse(routes.planVersions ?? [])
@@ -104,3 +112,28 @@ export const stubApi = (routes: ApiRoutes = {}) => {
   vi.stubGlobal('fetch', fetchMock)
   return fetchMock
 }
+
+/**
+ * The POSTs one run made to a path, as the bodies they carried.
+ *
+ * Matched by suffix, so a per-job endpoint can be named `/dispatch` without
+ * spelling out an id, and an exact path still matches itself. Shared because
+ * three suites had each written their own and the names had already started
+ * to differ more than the behaviour.
+ */
+export const postsTo = (
+  fetchMock: ReturnType<typeof stubApi>,
+  path: string,
+): (Record<string, unknown> | undefined)[] =>
+  fetchMock.mock.calls
+    .filter(
+      ([url, init]) =>
+        String(url).endsWith(path) &&
+        (init as RequestInit | undefined)?.method === 'POST',
+    )
+    .map(([, init]) => {
+      const body = (init as RequestInit | undefined)?.body
+      return body === undefined || body === null
+        ? undefined
+        : (JSON.parse(String(body)) as Record<string, unknown>)
+    })

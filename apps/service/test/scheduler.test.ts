@@ -376,3 +376,41 @@ describe('stopping a pass', () => {
     expect(availableSlots(context.store.listJobs())).toBe(3)
   })
 })
+
+describe('when a job’s session becomes visible', () => {
+  it('records it while the pass is still running, not when it ends', async () => {
+    const context = createTestContext()
+    const [jobId] = await aDispatchedQueue(context, 1)
+    const { codex, release } = aHeldCodex()
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+
+    // The pass is held, so this is the job as the Handler finds it when they
+    // click into a planning job: minutes from an answer and already openable.
+    await vi.waitFor(() => {
+      expect(context.store.getJob(jobId ?? '').codexSessionId).toBe('session-1')
+    })
+    expect(context.store.getJob(jobId ?? '').state).toBe('planning')
+
+    release()
+    await scheduler.whenIdle()
+    scheduler.stop()
+  })
+
+  it('keeps it when the pass that opened it fails', async () => {
+    const context = createTestContext()
+    const [jobId] = await aDispatchedQueue(context, 1)
+    const codex = createFakeCodexAdapter()
+    codex.failNextWith(new Error('Codex could not plan'))
+    const scheduler = aScheduler(context, codex)
+
+    scheduler.start()
+    await scheduler.whenIdle()
+    scheduler.stop()
+
+    // The conversation outlives the pass: a retry resumes it rather than
+    // briefing a fresh one, and the Handler can read what went wrong in it.
+    expect(context.store.getJob(jobId ?? '').codexSessionId).toBe('session-1')
+  })
+})

@@ -7,6 +7,8 @@ import { unavailableFolderPicker } from './adapters/folders.js'
 import { createFolderPicker } from './adapters/folders-macos.js'
 import { createGitAdapter } from './adapters/git-cli.js'
 import { createGitHubAdapter } from './adapters/github-cli.js'
+import { unavailableTerminal } from './adapters/terminal.js'
+import { createTerminalOpener } from './adapters/terminal-macos.js'
 import { buildApp } from './app.js'
 import { createDispatcher } from './domain/dispatch.js'
 import { createScheduler } from './domain/scheduler.js'
@@ -71,10 +73,15 @@ async function main(): Promise<void> {
   const github = createGitHubAdapter()
   // The dialog is AppleScript, so anywhere else the Handler types the path
   // and is told so, rather than being told osascript is missing.
-  const folders =
-    process.platform === 'darwin'
-      ? createFolderPicker()
-      : unavailableFolderPicker
+  // Both of these open something in the Handler's own login session, which
+  // is a thing only the machine they are sitting at can do.
+  const onMacOS = process.platform === 'darwin'
+
+  const folders = onMacOS ? createFolderPicker() : unavailableFolderPicker
+
+  const terminal = onMacOS
+    ? createTerminalOpener({ preferred: config.terminalApp })
+    : unavailableTerminal
 
   // Nothing this process started is still running, so anything the database
   // still calls planning or implementing was cut off mid-pass. Done before the
@@ -100,6 +107,7 @@ async function main(): Promise<void> {
           },
         },
     statusSource: database,
+    terminal,
     version: readVersion(),
   })
 

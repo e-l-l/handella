@@ -337,3 +337,27 @@ export const folderPickerUnavailable = (
   cause?: unknown,
 ): DomainError =>
   new DomainError('folder_picker_unavailable', 502, message, { cause })
+
+/**
+ * There is no terminal Handella can open, or the one it found refused to.
+ * A 502 for the reason `folderPickerUnavailable` is one: the operation itself
+ * is fine, the convenience around it is not, and the worktree path is on the
+ * job page for a Handler who would rather open their own shell.
+ */
+export const terminalUnavailable = (
+  message: string,
+  cause?: unknown,
+): DomainError =>
+  new DomainError('terminal_unavailable', 502, message, { cause })
+
+/**
+ * Asked to open a shell in a worktree that is not there. Either the Job has
+ * not been dispatched, or the cut has not finished — both are answers about
+ * where the Job is rather than failures, so this reads as a conflict.
+ */
+export const worktreeNotCut = (jobId: string): DomainError =>
+  new DomainError(
+    'worktree_not_cut',
+    409,
+    `Job ${jobId} has no worktree yet, so there is nothing to open a shell in`,
+  )

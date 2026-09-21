@@ -5,14 +5,10 @@ import { Dot } from '../components/Chip.tsx'
 import { Fact } from '../components/Fact.tsx'
 import { RepositorySettings } from '../components/RepositorySettings.tsx'
 import { RunbookSettings } from '../components/RunbookSettings.tsx'
+import { ServiceUnreachable } from '../components/ServiceUnreachable.tsx'
 import { SkeletonList } from '../components/Skeleton.tsx'
 import { databaseStatusLabels, formatTimestamp } from '../labels.ts'
-import {
-  cardClass,
-  primaryButtonClass,
-  screenClass,
-  sectionTitleClass,
-} from '../styles.ts'
+import { cardClass, screenClass, sectionTitleClass } from '../styles.ts'
 
 function formatUptime(value: number): string {
   const seconds = Math.max(0, Math.floor(value))
@@ -64,30 +60,12 @@ export function SystemStatusPage() {
       {statusQuery.isPending ? <LoadingState /> : null}
 
       {statusQuery.isError ? (
-        <div
-          aria-live="assertive"
-          className="flex flex-col gap-3 rounded-[22px] border border-red/30 bg-red/[0.09] p-6"
-          role="alert"
-        >
-          <p className="font-mono text-[11px] uppercase tracking-[0.05em] text-red-ink">
-            Service unavailable
-          </p>
-          <h2 className="text-[16px] font-semibold">
-            Handella could not complete its local health check.
-          </h2>
-          <p className="max-w-[640px] text-[13px] leading-[1.6] text-ink-3">
-            {statusQuery.error.message} Check the terminal running the service,
-            then try again.
-          </p>
-          <button
-            className={`self-start ${primaryButtonClass}`}
-            disabled={statusQuery.isFetching}
-            onClick={() => void statusQuery.refetch()}
-            type="button"
-          >
-            {statusQuery.isFetching ? 'Trying again…' : 'Try again'}
-          </button>
-        </div>
+        <ServiceUnreachable
+          heading="Handella could not complete its local health check."
+          message={statusQuery.error.message}
+          onRetry={() => void statusQuery.refetch()}
+          retrying={statusQuery.isFetching}
+        />
       ) : null}
 
       {statusQuery.data ? (

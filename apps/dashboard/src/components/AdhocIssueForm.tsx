@@ -9,13 +9,15 @@ import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router'
 
 import { createAdhocJob, teamsOptions } from '../api/intake.ts'
-import { jobKeys } from '../api/jobs.ts'
+import { dispatchOrReason, jobKeys } from '../api/jobs.ts'
 import { linearPriorityLabels } from '../labels.ts'
 import {
+  amberBannerClass,
   cardClass,
   fieldClass,
   fieldLabelClass,
   primaryButtonClass,
+  secondaryButtonClass,
 } from '../styles.ts'
 import { BaseBranchField } from './BaseBranchField.tsx'
 import { WorkClassField } from './WorkClassField.tsx'
@@ -81,10 +83,16 @@ export function AdhocIssueForm({
   const teamId =
     draft.teamId === '' ? (teams.data?.[0]?.id ?? '') : draft.teamId
 
+  /**
+   * The issue, the job, and then the queue, in one submission and three
+   * requests. Dispatch is caught rather than thrown on, for the reason the
+   * Intake panel gives: the Linear issue and the Job have both committed by
+   * then, and a rejection here would clear the form as though nothing had.
+   */
   const create = useMutation({
-    mutationFn: () => {
+    mutationFn: async (dispatch: boolean): Promise<string | null> => {
       const description = trimmedOrUndefined(draft.description)
-      return createAdhocJob({
+      const job = await createAdhocJob({
         teamId,
         title: draft.title,
         workClass: draft.workClass,
@@ -93,6 +101,10 @@ export function AdhocIssueForm({
         ...(description === undefined ? {} : { description }),
         priority: draft.priority,
       })
+
+      // `null` either way when there is nothing left to say: the queue was
+      // taken, or it was never asked for.
+      return dispatch ? await dispatchOrReason(job.id) : null
     },
     onSuccess: async () => {
       setDraft(emptyDraft)
@@ -105,9 +117,11 @@ export function AdhocIssueForm({
     setDraft((current) => ({ ...current, [key]: value }))
   }
 
+  const cannotSubmit = create.isPending || repositoryId === ''
+
   const submit = (event: FormEvent) => {
     event.preventDefault()
-    create.mutate()
+    create.mutate(true)
   }
 
   return (
@@ -117,7 +131,8 @@ export function AdhocIssueForm({
       onSubmit={submit}
     >
       <p className="text-[12.5px] text-ink-4">
-        Creates the Linear issue first, then the job, so it can be dispatched.
+        Creates the Linear issue first, then the job, then dispatches it into
+        the queue.
       </p>
 
       <label className={fieldLabelClass}>
@@ -184,13 +199,39 @@ export function AdhocIssueForm({
         value={draft.baseBranch}
       />
 
-      <button
-        className={`self-start ${primaryButtonClass} disabled:opacity-50`}
-        disabled={create.isPending || repositoryId === ''}
-        type="submit"
-      >
-        Create issue and job
-      </button>
+      <div className="flex flex-wrap items-center gap-2.5">
+        <button
+          className={`${primaryButtonClass} disabled:opacity-50`}
+          disabled={cannotSubmit}
+          type="submit"
+        >
+          Create and dispatch
+        </button>
+        <button
+          className={secondaryButtonClass}
+          disabled={cannotSubmit}
+          onClick={() => create.mutate(false)}
+          type="button"
+        >
+          Create only
+        </button>
+      </div>
+
+      {/* The issue and the job are both made whatever happens next, so a
+          Dispatch that was refused is reported where it can be acted on rather
+          than as a failed submission. Only while it is still the last word:
+          the outcome of a submission outlives the one after it, and a later
+          submission that failed outright made no job to dispatch. */}
+      {typeof create.data === 'string' && create.error === null ? (
+        <p className={amberBannerClass} role="status">
+          The job was created, but it could not be dispatched: {create.data}{' '}
+          Dispatch it again from{' '}
+          <Link className="underline underline-offset-2" to="/jobs">
+            the jobs list
+          </Link>
+          .
+        </p>
+      ) : null}
 
       {/* Without a checkout there is nothing to cut a worktree from, and the
           job half of this request would be refused after the Linear issue had

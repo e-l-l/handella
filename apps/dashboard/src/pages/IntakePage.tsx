@@ -8,7 +8,7 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router'
 
-import { ApiRequestError } from '../api/client.ts'
+import { messageOf } from '../api/client.ts'
 import {
   createJobFromLinearIssue,
   intakeKeys,
@@ -16,13 +16,14 @@ import {
   teamStatesOptions,
   teamsOptions,
 } from '../api/intake.ts'
-import { jobKeys } from '../api/jobs.ts'
+import { dispatchOrReason, jobKeys } from '../api/jobs.ts'
 import { repositoriesOptions } from '../api/repositories.ts'
 import { fetchSystemStatus, statusKeys } from '../api/status.ts'
 import { AdhocIssueForm } from '../components/AdhocIssueForm.tsx'
 import { BaseBranchField } from '../components/BaseBranchField.tsx'
 import { Dot } from '../components/Chip.tsx'
 import { LinearIssueRow } from '../components/LinearIssueRow.tsx'
+import { ServiceUnreachable } from '../components/ServiceUnreachable.tsx'
 import { Skeleton, SkeletonList } from '../components/Skeleton.tsx'
 import { WorkClassField } from '../components/WorkClassField.tsx'
 import { linearPriorityLabels } from '../labels.ts'
@@ -42,7 +43,17 @@ import {
   wideRailGridClass,
 } from '../styles.ts'
 
-type Outcome = { kind: 'created' } | { kind: 'failed'; message: string }
+/**
+ * What became of one selected issue. Four rather than two, because Intake now
+ * runs Dispatch after itself and the two halves fail separately: a Job whose
+ * Dispatch was refused still exists, still holds its issue, and is one button
+ * away from the queue on the jobs list.
+ */
+type Outcome =
+  | { kind: 'created' }
+  | { kind: 'dispatched' }
+  | { kind: 'failed'; message: string }
+  | { kind: 'undispatched'; message: string }
 
 /**
  * A page of issues costs the local service one request per issue to resolve
@@ -111,6 +122,49 @@ const blockedReason = (offer: IntakeIssue | undefined): string | null => {
   if (offer.heldByJobId !== null)
     return 'A live job already holds this issue, and its canonical branch with it.'
   return null
+}
+
+/**
+ * What happened to one issue in the last submission, under the row it was
+ * picked from. A job that was created but not dispatched is neither of the
+ * other two: it is amber because there is something left to do, and it says
+ * where that is, because the Selection no longer holds the issue.
+ */
+function IssueOutcome({ outcome }: { outcome: Outcome }) {
+  if (outcome.kind === 'dispatched') {
+    return (
+      <p className="pl-[18px] text-[12px] text-mint-soft">
+        Job created and queued.
+      </p>
+    )
+  }
+
+  if (outcome.kind === 'created') {
+    return (
+      <p className="pl-[18px] text-[12px] text-mint-soft">
+        Job created, waiting in intake.
+      </p>
+    )
+  }
+
+  if (outcome.kind === 'undispatched') {
+    return (
+      <p className="pl-[18px] text-[12px] text-amber-ink" role="alert">
+        Job created, but it could not be dispatched: {outcome.message} Dispatch
+        it again from{' '}
+        <Link className="underline underline-offset-2" to="/jobs">
+          the jobs list
+        </Link>
+        .
+      </p>
+    )
+  }
+
+  return (
+    <p className="pl-[18px] text-[12px] text-red-ink" role="alert">
+      {outcome.message}
+    </p>
+  )
 }
 
 /**
@@ -294,43 +348,59 @@ export function IntakePage() {
   /**
    * One request per issue, so each job gets its own conflict and its own
    * outcome: a stale selection cannot discard the rest of the batch.
+   *
+   * `dispatch` is the usual answer. A job left in `intake` is a job the
+   * scheduler cannot see, and the Handler who just picked the work has already
+   * said they want it done — so Dispatch runs here, per issue, rather than
+   * waiting to be asked again from the job page.
    */
   const create = useMutation({
-    mutationFn: async () => {
-      const entries = Object.entries(selections)
-      const settled = await Promise.allSettled(
-        entries.map(([issueId, selection]) =>
-          createJobFromLinearIssue({
-            issueId,
-            repositoryId: chosenRepositoryId,
-            baseBranch: selection.baseBranch,
-            workClass: selection.workClass,
-          }),
+    mutationFn: async (dispatch: boolean) => {
+      const results = await Promise.all(
+        Object.entries(selections).map(
+          async ([issueId, selection]): Promise<[string, Outcome]> => {
+            try {
+              const job = await createJobFromLinearIssue({
+                issueId,
+                repositoryId: chosenRepositoryId,
+                baseBranch: selection.baseBranch,
+                workClass: selection.workClass,
+              })
+
+              if (!dispatch) return [issueId, { kind: 'created' }]
+
+              // Answered rather than thrown: the Job record has committed, so
+              // this issue is taken whatever happened next, and a rejection
+              // here would report it as one that was never taken at all.
+              const refused = await dispatchOrReason(job.id)
+              return [
+                issueId,
+                refused === null
+                  ? { kind: 'dispatched' }
+                  : { kind: 'undispatched', message: refused },
+              ]
+            } catch (error) {
+              return [
+                issueId,
+                {
+                  kind: 'failed',
+                  message: messageOf(error, 'That issue could not be taken.'),
+                },
+              ]
+            }
+          },
         ),
       )
 
-      return Object.fromEntries(
-        entries.map(([issueId], index): [string, Outcome] => {
-          const result = settled[index]
-          if (result?.status === 'fulfilled')
-            return [issueId, { kind: 'created' }]
-          return [
-            issueId,
-            {
-              kind: 'failed',
-              message:
-                result?.reason instanceof ApiRequestError
-                  ? result.reason.message
-                  : 'That issue could not be taken.',
-            },
-          ]
-        }),
-      )
+      return Object.fromEntries(results)
     },
     onSuccess: async (results) => {
+      // Everything but an outright failure made a Job, and a Job holds its
+      // issue: one whose Dispatch was refused leaves the Selection too, or the
+      // next submission would be refused for an issue it already took.
       drop(
         Object.entries(results)
-          .filter(([, outcome]) => outcome.kind === 'created')
+          .filter(([, outcome]) => outcome.kind !== 'failed')
           .map(([issueId]) => issueId),
       )
       // Only what taking a job changes: the teams and workflow states under
@@ -351,6 +421,8 @@ export function IntakePage() {
   const blocked = selected.some(
     ([issueId]) => blockedReason(byIssueId.get(issueId)) !== null,
   )
+  // Both buttons submit the same Selection, so they are refused together.
+  const cannotSubmit = create.isPending || blocked || chosenRepositoryId === ''
 
   if (status.isPending) {
     return (
@@ -360,6 +432,23 @@ export function IntakePage() {
         role="status"
       >
         <Skeleton className="h-40 rounded-[22px]" />
+      </section>
+    )
+  }
+
+  if (status.isError) {
+    return (
+      <section className={`flex flex-col gap-6 ${screenClass}`}>
+        <h1 className={sectionTitleClass}>Intake</h1>
+        <ServiceUnreachable
+          // Told apart from a status read that says Linear is unconfigured:
+          // they look identical from here otherwise, and a Handler who has set
+          // a key would read the setup notice as a lie about their own .env.
+          heading="Handella could not reach the local service, so it cannot say whether Linear is set up."
+          message={status.error.message}
+          onRetry={() => void status.refetch()}
+          retrying={status.isFetching}
+        />
       </section>
     )
   }
@@ -474,18 +563,8 @@ export function IntakePage() {
                       onToggle={() => toggle(offer.issue.id)}
                       selected={offer.issue.id in selections}
                     />
-                    {outcome === undefined ? null : outcome.kind ===
-                      'created' ? (
-                      <p className="pl-[18px] text-[12px] text-mint-soft">
-                        Job created.
-                      </p>
-                    ) : (
-                      <p
-                        className="pl-[18px] text-[12px] text-red-ink"
-                        role="alert"
-                      >
-                        {outcome.message}
-                      </p>
+                    {outcome === undefined ? null : (
+                      <IssueOutcome outcome={outcome} />
                     )}
                   </li>
                 )
@@ -517,9 +596,12 @@ export function IntakePage() {
           from 1200px, which is where the rail exists at all — below that it is
           a section stacked under the list and scrolls with the page. */}
       <aside className="flex flex-col gap-[18px] border-line bg-deep px-[26px] pb-8 pt-[26px] min-[1200px]:sticky min-[1200px]:top-[70px] min-[1200px]:max-h-[calc(100svh-70px)] min-[1200px]:self-start min-[1200px]:overflow-y-auto min-[1200px]:border-l">
-        {/* Intake, not Dispatch: this panel commits the Job record and nothing
-            else. Claiming the branch, cutting the worktree and taking a queue
-            position are Dispatch's, and happen from the job page. */}
+        {/* Intake and then Dispatch, as two steps and one submission. Intake
+            commits the Job record; claiming the branch, cutting the worktree
+            and taking a queue position are still Dispatch's own endpoint, run
+            per issue once its Job exists — so either half can be refused
+            without the other being undone. "Create only" stops after the
+            first. */}
         <h2 className="text-[16px] font-semibold">Intake</h2>
 
         {/* Chosen once for the panel rather than per issue: a base branch means
@@ -570,7 +652,7 @@ export function IntakePage() {
             className="flex flex-col gap-6"
             onSubmit={(event) => {
               event.preventDefault()
-              create.mutate()
+              create.mutate(true)
             }}
           >
             {selected.map(([issueId, choices]) => (
@@ -587,17 +669,27 @@ export function IntakePage() {
             <div className="flex flex-col gap-2.5">
               <button
                 className={`w-full ${primaryButtonClass} py-3.5 text-[14px]`}
-                disabled={
-                  create.isPending || blocked || chosenRepositoryId === ''
-                }
+                disabled={cannotSubmit}
                 type="submit"
               >
                 {selected.length === 1
-                  ? 'Create job'
-                  : `Create ${selected.length} jobs`}
+                  ? 'Create and dispatch job'
+                  : `Create and dispatch ${selected.length} jobs`}
+              </button>
+              {/* For work that is being taken now and started later: the job
+                  exists, holds its issue, and claims no branch until the
+                  Handler dispatches it from the jobs list. */}
+              <button
+                className={`w-full ${secondaryButtonClass} py-3`}
+                disabled={cannotSubmit}
+                onClick={() => create.mutate(false)}
+                type="button"
+              >
+                Create only, without dispatching
               </button>
               <p className="text-center text-[12px] text-ink-5">
-                Each issue is classified, branched and created on its own.
+                Each issue is classified, branched, created and dispatched on
+                its own.
               </p>
             </div>
           </form>

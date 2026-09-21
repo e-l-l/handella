@@ -10,6 +10,7 @@ import type { FolderPicker } from './adapters/folders.js'
 import type { GitAdapter } from './adapters/git.js'
 import type { GitHubAdapter } from './adapters/github.js'
 import type { LinearAdapter } from './adapters/linear.js'
+import type { TerminalOpener } from './adapters/terminal.js'
 import type { StatusSource } from './database/database.js'
 import { crossOriginRefused, DomainError } from './domain/errors.js'
 import type { Dispatcher } from './domain/dispatch.js'
@@ -36,6 +37,7 @@ interface BuildAppOptions {
   startedAt?: Date
   statusSource: StatusSource
   store: Store
+  terminal: TerminalOpener
   version: string
 }
 
@@ -120,6 +122,7 @@ export async function buildApp(options: BuildAppOptions) {
   await app.register(jobRoutes, {
     dispatcher: options.dispatcher,
     store: options.store,
+    terminal: options.terminal,
   })
   await app.register(attentionRoutes, { store: options.store })
   await app.register(runbookRoutes, { store: options.store })

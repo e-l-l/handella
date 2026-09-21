@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { GitAdapter } from '../src/adapters/git.js'
 import { createDispatcher, worktreePathFor } from '../src/domain/dispatch.js'
 import type { Store } from '../src/domain/store.js'
 import {
@@ -270,5 +271,69 @@ describe('POST /api/jobs/:jobId/dispatch', () => {
 
     expect(again.statusCode).toBe(409)
     expect(again.json()).toMatchObject({ code: 'illegal_transition' })
+  })
+})
+
+/**
+ * A git that takes a tick to fetch, so a second cut allowed to start would be
+ * running while the first still is. The fake underneath resolves immediately,
+ * which is exactly why nothing else in this file can see an overlap.
+ */
+const anObservedGit = () => {
+  const fake = createFakeGitAdapter()
+  let live = 0
+  let overlapped = false
+
+  const git: GitAdapter = {
+    ...fake,
+    async fetchBase(repositoryPath, base) {
+      live += 1
+      if (live > 1) overlapped = true
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      await fake.fetchBase(repositoryPath, base)
+    },
+    async addWorktree(input) {
+      await fake.addWorktree(input)
+      live -= 1
+    },
+  }
+
+  return { fake, git, overlapped: () => overlapped }
+}
+
+describe('two jobs dispatched at once', () => {
+  it('cuts one worktree at a time in a checkout', async () => {
+    const { store } = createTestContext()
+    const other = aLinearIssue({
+      id: 'c3c0f6b7-1a2f-4d7c-8b4a-3c2d5e6f7081',
+      identifier: 'ENG-413',
+      title: 'Drop the retry loop',
+      branchName: 'ell/eng-413-drop-the-retry-loop',
+    })
+
+    const first = aJob(store)
+    const second = aJob(store, { issue: aLinearIssueLink(other) })
+    const { fake, git, overlapped } = anObservedGit()
+    const { dispatcher } = aDispatcher(store, {
+      git,
+      linear: createFakeLinearAdapter({ issues: [aLinearIssue(), other] }),
+    })
+
+    // Both claims first, the way Intake takes a Selection: the 202 lands long
+    // before the cut it started.
+    const outcomes = await Promise.all([
+      dispatcher.dispatch(first.id),
+      dispatcher.dispatch(second.id),
+    ])
+    const cut = await Promise.all(outcomes.map((outcome) => outcome.worktree))
+
+    // Two git processes in one checkout is two writers on one `.git`, which
+    // is a lock contention failure rather than a slow dispatch.
+    expect(overlapped()).toBe(false)
+    expect(fake.added.map((input) => input.branch)).toEqual([
+      branchName,
+      other.branchName,
+    ])
+    expect(cut.map((job) => job.worktreePath)).not.toContain(null)
   })
 })

@@ -10,6 +10,11 @@ export default tseslint.config(
       '**/dist/**',
       '**/coverage/**',
       '**/node_modules/**',
+      // Handella's own runtime directory: the database, the logs, and one
+      // checkout of somebody else's repository per dispatched job. Linting a
+      // Job's worktree means linting whatever it is working on, with that
+      // project's config and without its dependencies installed.
+      '.data/**',
       'apps/service/drizzle/**',
     ],
   },

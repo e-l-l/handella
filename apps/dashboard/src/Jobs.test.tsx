@@ -9,7 +9,7 @@ import {
 } from './test/fakeEventSource.ts'
 import { aJob } from './test/fixtures.ts'
 import { renderAt } from './test/renderApp.tsx'
-import { stubApi } from './test/stubApi.ts'
+import { jsonResponse, postsTo, stubApi } from './test/stubApi.ts'
 
 const anAttentionItem = (
   overrides: Partial<AttentionItem> = {},
@@ -214,12 +214,7 @@ describe('the job detail page', () => {
     )
 
     await waitFor(() => {
-      const posted = fetchMock.mock.calls.filter(
-        ([url, init]) =>
-          String(url).endsWith('/dispatch') &&
-          (init as RequestInit | undefined)?.method === 'POST',
-      )
-      expect(posted).toHaveLength(1)
+      expect(postsTo(fetchMock, '/dispatch')).toHaveLength(1)
     })
   })
 
@@ -256,6 +251,125 @@ describe('the job detail page', () => {
     expect(
       await screen.findByText('This job has reached the end of its life.'),
     ).toBeInTheDocument()
+    // Including Suspend: a job that is over is not a job that is stopped, and
+    // the service refuses to suspend one.
+    expect(screen.queryByRole('button', { name: 'Suspend' })).toBeNull()
+  })
+})
+
+describe('the jobs list', () => {
+  it('dispatches from the row, without opening the job first', async () => {
+    const fetchMock = stubApi({ attention: [], jobs: [aJob()] })
+
+    renderAt('/jobs')
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Dispatch' }),
+    )
+
+    await waitFor(() => {
+      expect(postsTo(fetchMock, '/dispatch')).toHaveLength(1)
+    })
+  })
+
+  it('keeps the row itself a link to the job', async () => {
+    stubApi({ attention: [], jobs: [aJob()] })
+
+    renderAt('/jobs')
+
+    expect(
+      await screen.findByRole('link', {
+        name: 'Open ad hoc: Fix the flaky login test',
+      }),
+    ).toHaveAttribute('href', `/jobs/${aJob().id}`)
+  })
+
+  it('resumes the codex session of a job that has one', async () => {
+    const fetchMock = stubApi({
+      attention: [],
+      jobs: [
+        aJob({
+          codexSessionId: '0198f2c1-7a3e-7bd2-9f10-2c4a6b8e0d31',
+          state: 'planning',
+          worktreePath: '/Users/ell/.data/worktrees/eng-412/job',
+        }),
+      ],
+    })
+
+    renderAt('/jobs')
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Open session' }),
+    )
+
+    await waitFor(() => {
+      expect(postsTo(fetchMock, '/terminal')).toHaveLength(1)
+    })
+  })
+
+  it('opens a terminal in the worktree of a job that has not planned yet', async () => {
+    const fetchMock = stubApi({
+      attention: [],
+      jobs: [
+        aJob({
+          state: 'planning',
+          worktreePath: '/Users/ell/.data/worktrees/eng-412/job',
+        }),
+      ],
+    })
+
+    renderAt('/jobs')
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Open terminal' }),
+    )
+
+    await waitFor(() => {
+      expect(postsTo(fetchMock, '/terminal')).toHaveLength(1)
+    })
+  })
+
+  it('offers no terminal before dispatch has cut a worktree', async () => {
+    stubApi({ attention: [], jobs: [aJob({ state: 'intake' })] })
+
+    renderAt('/jobs')
+    await screen.findByText('Fix the flaky login test')
+
+    expect(screen.queryByRole('button', { name: 'Open terminal' })).toBeNull()
+  })
+
+  it('says so when there is no terminal to open', async () => {
+    stubApi({
+      attention: [],
+      jobs: [aJob({ state: 'planning', worktreePath: '/tmp/worktree' })],
+      extra: (url, init) =>
+        String(url).endsWith('/terminal') && init?.method === 'POST'
+          ? jsonResponse(
+              {
+                code: 'terminal_unavailable',
+                message: 'Ghostty could not be opened at /tmp/worktree',
+              },
+              502,
+            )
+          : undefined,
+    })
+
+    renderAt('/jobs')
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Open terminal' }),
+    )
+
+    expect(
+      await screen.findByText('Ghostty could not be opened at /tmp/worktree'),
+    ).toBeInTheDocument()
+  })
+
+  it('leaves cancelling to the job page, where there is room to mean it', async () => {
+    stubApi({ attention: [], jobs: [aJob()] })
+
+    renderAt('/jobs')
+    await screen.findByText('Fix the flaky login test')
+
+    expect(
+      screen.queryByRole('button', { name: 'Move to Cancelled' }),
+    ).toBeNull()
   })
 })
 
