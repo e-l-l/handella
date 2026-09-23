@@ -3,7 +3,6 @@ import type {
   AttentionItem,
   Job,
   Milestone,
-  PlanVersion,
   Repository,
   RunbookVersion,
   StatusResponse,
@@ -25,7 +24,6 @@ export interface ApiRoutes {
   attention?: AttentionItem[] | undefined
   jobs?: Job[] | undefined
   milestones?: Milestone[] | undefined
-  planVersions?: PlanVersion[] | undefined
   repositories?: Repository[] | undefined
   runbookVersions?: RunbookVersion[] | undefined
   status?: StatusResponse | undefined
@@ -95,9 +93,10 @@ export const stubApi = (routes: ApiRoutes = {}) => {
       return jsonResponse(aJob({ state: 'queued' }), 202)
     if (url.endsWith('/terminal') && method === 'POST')
       return jsonResponse(null, 204)
+    // Approval answers with the job as the service does: moved to `approved`.
+    if (url.endsWith('/approve') && method === 'POST')
+      return jsonResponse(aJob({ state: 'approved' }))
     if (url.endsWith('/transitions')) return jsonResponse([])
-    if (url.endsWith('/plan-versions'))
-      return jsonResponse(routes.planVersions ?? [])
     if (url.endsWith('/attempts')) return jsonResponse(routes.attempts ?? [])
     if (url.endsWith('/milestones'))
       return jsonResponse(routes.milestones ?? [])

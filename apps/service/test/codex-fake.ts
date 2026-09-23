@@ -1,4 +1,4 @@
-import type { ImplementationReport, PlanContent } from '@handella/contracts'
+import type { ImplementationReport } from '@handella/contracts'
 
 import type {
   CodexAdapter,
@@ -7,26 +7,6 @@ import type {
   PlanningRequest,
   PlanningResult,
 } from '../src/adapters/codex.js'
-
-export const aPlanContent = (
-  overrides: Partial<PlanContent> = {},
-): PlanContent => ({
-  summary: 'Make the login test wait for the session cookie.',
-  steps: [
-    {
-      id: 'await-cookie',
-      title: 'Await the session cookie before asserting',
-      detail:
-        'The assertion races the redirect, so it fails about one run in ten.',
-      files: ['test/login.test.ts'],
-      required: true,
-    },
-  ],
-  verification: ['npm test -- login'],
-  risks: ['The same race may exist in the signup test.'],
-  outOfScope: ['Rewriting the auth fixture.'],
-  ...overrides,
-})
 
 export const aReport = (
   overrides: Partial<ImplementationReport> = {},
@@ -67,8 +47,8 @@ export interface FakeCodexAdapter extends CodexAdapter {
 }
 
 /**
- * Records what it was asked and answers with a plan. The real behaviour — the
- * process, its flags, the JSONL — is proven against the real binary in
+ * Records what it was asked and answers with a session. The real behaviour —
+ * the process, its flags, the JSONL — is proven against the real binary in
  * `codex-cli.test.ts`; what a fake is for here is the ordering around a pass.
  */
 export const createFakeCodexAdapter = (
@@ -138,7 +118,7 @@ export const createFakeCodexAdapter = (
     plan(request): Promise<PlanningResult> {
       calls.push(request)
       spawn(request)
-      const sessionId = request.sessionId ?? options.sessionId ?? 'session-1'
+      const sessionId = options.sessionId ?? 'session-1'
 
       // Announced before anything else, the way the real adapter announces it:
       // Codex opens the thread and then reasons, so a pass that fails has still
@@ -151,12 +131,7 @@ export const createFakeCodexAdapter = (
         return Promise.reject(failure)
       }
 
-      return Promise.resolve({
-        content: aPlanContent(),
-        // A resumed pass stays in the session it resumed, which is what makes
-        // "the revision ran in the same session" assertable.
-        sessionId,
-      })
+      return Promise.resolve({ sessionId })
     },
   }
 }
@@ -181,7 +156,7 @@ export const aHeldCodex = () => {
       // Announced before the wait rather than after it. The real adapter has a
       // session id seconds in and an answer minutes later, and a held pass is
       // how a test looks at a job during that stretch.
-      request.onSessionId(request.sessionId ?? 'session-1')
+      request.onSessionId('session-1')
       await held
       return inner.plan({ ...request, onSessionId: () => {} })
     },

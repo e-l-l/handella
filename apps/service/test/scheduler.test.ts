@@ -86,9 +86,9 @@ describe('the three-slot ceiling', () => {
     expect(context.store.listAttentionItems()).toMatchObject([
       { jobId, kind: 'planApproval' },
     ])
-    expect(context.store.listPlanVersions(jobId ?? '')).toMatchObject([
-      { revision: 1, approvalState: 'pending' },
-    ])
+    // Nothing else is written: the plan is prose in the session, and the
+    // runbook is frozen only when the Handler approves.
+    expect(context.store.listRunbookSnapshots(jobId ?? '')).toEqual([])
   })
 
   it('moves jobs with actor system, which nothing wrote before', async () => {
@@ -208,9 +208,9 @@ describe('what a planning pass is given', () => {
     )
     expect(call?.runbook).toBe('Run the suite')
     expect(call?.issue.identifier).toBeTruthy()
-    // Nothing to revise yet, so nothing to resume.
-    expect(call?.sessionId).toBeUndefined()
-    expect(call?.feedback).toBeUndefined()
+    // Every pass is fresh: nothing is resumed and nothing is fed back.
+    expect(call).not.toHaveProperty('sessionId')
+    expect(call).not.toHaveProperty('feedback')
   })
 
   it('records the session the pass ran in, so the next one can resume it', async () => {
@@ -228,50 +228,6 @@ describe('what a planning pass is given', () => {
     expect(context.store.getJob(ids[0] ?? '').codexSessionId).toBe(
       'session-abc',
     )
-  })
-
-  it('stores the plan as a structured revision rather than text', async () => {
-    const context = createTestContext()
-    const ids = await aDispatchedQueue(context, 1)
-    const scheduler = aScheduler(context)
-
-    scheduler.start()
-    await scheduler.whenIdle()
-    scheduler.stop()
-
-    const versions = context.store.listPlanVersions(ids[0] ?? '')
-    expect(versions).toHaveLength(1)
-    expect(versions[0]?.revision).toBe(1)
-    expect(versions[0]?.approvalState).toBe('pending')
-    expect(versions[0]?.content.steps[0]?.id).toBe('await-cookie')
-  })
-})
-
-describe('a change request', () => {
-  it('re-queues the job and revises in the same session', async () => {
-    const context = createTestContext()
-    const ids = await aDispatchedQueue(context, 1)
-    const jobId = ids[0] ?? ''
-    const codex = createFakeCodexAdapter({ sessionId: 'session-abc' })
-    const scheduler = aScheduler(context, codex)
-
-    scheduler.start()
-    await scheduler.whenIdle()
-
-    const first = context.store.listPlanVersions(jobId)[0]
-    context.store.requestPlanChanges({
-      feedback: 'Cover the signup test too',
-      jobId,
-      planVersionId: first?.id ?? '',
-    })
-    await scheduler.whenIdle()
-    scheduler.stop()
-
-    expect(codex.calls).toHaveLength(2)
-    expect(codex.calls[1]?.sessionId).toBe('session-abc')
-    expect(codex.calls[1]?.feedback).toBe('Cover the signup test too')
-    expect(context.store.listPlanVersions(jobId)).toHaveLength(2)
-    expect(context.store.getJob(jobId).state).toBe('planReview')
   })
 })
 

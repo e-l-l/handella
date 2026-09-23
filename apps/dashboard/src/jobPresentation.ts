@@ -126,7 +126,7 @@ export const needsYouReason = (job: Job): string | null => {
   if (job.state === 'intake')
     return 'This job holds its issue but has claimed no branch and cut no worktree. Dispatching claims the canonical branch, cuts the worktree and puts it in the queue.'
   if (job.state === 'planReview')
-    return 'The plan is waiting on your answer. Nothing is written to the branch until you approve it.'
+    return 'The plan is in the Codex session. Open the session to read it and approve here when it is right; nothing is written to the branch until you do.'
   if (job.state === 'prOpen')
     return 'The pull request is open and every runbook step passed. Handella never merges — reviewing and merging stay with you.'
   if (job.state === 'reviewing')
@@ -165,7 +165,7 @@ export const waitingSince = (job: Job): string | null => {
   if (job.state === 'intake')
     return 'Taken, and not yet dispatched. Dispatching cuts the worktree and queues it.'
   if (job.state === 'planReview')
-    return 'The plan is on the Plan tab, waiting for your answer.'
+    return 'The plan is in the Codex session, waiting for your answer.'
   if (job.state === 'prOpen')
     return 'The pull request is open and merging is yours.'
   if (job.state === 'reviewing')

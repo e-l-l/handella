@@ -9,6 +9,7 @@ import { useMutation } from '@tanstack/react-query'
 import { useState } from 'react'
 
 import {
+  approveJob,
   checkJobMerge,
   dispatchJob,
   openJobTerminal,
@@ -56,6 +57,13 @@ export type JobActionTarget =
 
 export type JobControls = {
   action: JobActionTarget
+  /**
+   * Approving the plan, which lives in the Codex session rather than on any
+   * screen here. Offered only while the job is waiting on it: the job page's
+   * banner draws it as the primary, and nothing else draws it at all, because
+   * a plan approved from a list row is a plan nobody read.
+   */
+  approve: { act: () => void; offered: boolean; pending: boolean }
   /**
    * Cancelling is the one move that opens a confirmation first. The `···`
    * entry and the job page's danger-zone button both `request` it, so there is
@@ -121,13 +129,19 @@ export function useJobControls(job: Job): JobControls {
     mutationFn: () => checkJobMerge(job.id),
     onSettled: refresh,
   })
+  const approve = useMutation({
+    ...reports,
+    mutationFn: () => approveJob(job.id),
+    onSettled: refresh,
+  })
 
   const pending =
     move.isPending ||
     suspend.isPending ||
     resume.isPending ||
     dispatch.isPending ||
-    checkMerge.isPending
+    checkMerge.isPending ||
+    approve.isPending
 
   const overForGood = isTerminalJobState(job.state)
   // Merged is not terminal — it can still be archived — but it is settled:
@@ -176,9 +190,8 @@ export function useJobControls(job: Job): JobControls {
     if (kind === 'openSession') return openTerminal
     if (kind === 'reviewPr' && job.originalPrUrl !== null)
       return { href: job.originalPrUrl, kind, label }
-    // The plan lives on the job page, and the tab it lives on is named in the
-    // link so the Handler lands on it rather than on the timeline.
-    if (kind === 'reviewPlan') return { kind, label, to: `${jobPath}?tab=plan` }
+    // `reviewPlan` lands here too: the plan is read in the Codex session, and
+    // the job page is where the session is opened and the approval given.
     return { kind, label, to: jobPath }
   })()
 
@@ -261,9 +274,9 @@ export function useJobControls(job: Job): JobControls {
     })
 
   // `approved` is left out for the same kind of reason as Dispatch: the service
-  // only lets a job in once a plan version has been approved, and approving
-  // one is its own endpoint on the Plan tab. Offered here, the move would be
-  // refused every time the newest revision is still pending.
+  // only lets a job in with a runbook snapshot behind it, and approving is its
+  // own endpoint that writes one. Offered here, the move would be refused every
+  // time.
   const moves = legalTransitionsFrom(job.state).filter(
     (to) =>
       to !== 'cancelled' &&
@@ -291,6 +304,11 @@ export function useJobControls(job: Job): JobControls {
 
   return {
     action,
+    approve: {
+      act: () => approve.mutate(),
+      offered: job.state === 'planReview' && job.suspension === null,
+      pending: approve.isPending,
+    },
     cancel: {
       close: () => setCancelRequested(false),
       confirm: () => {

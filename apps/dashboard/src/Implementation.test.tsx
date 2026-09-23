@@ -90,13 +90,17 @@ describe('the implementation spine', () => {
     await waitFor(() => expect(logRequests().length).toBeGreaterThan(0))
   })
 
-  it('shows the sandbox the job is actually under', async () => {
+  it('states what Handella overrides in the Handler’s Codex config', async () => {
     const job = anImplementingJob()
     stubApi({ jobs: [job] })
 
     renderAt(`/jobs/${job.id}`)
 
-    expect(await screen.findByText('workspace-write · network')).toBeVisible()
+    expect(
+      await screen.findByText(
+        'approvals off · network on · otherwise your Codex config',
+      ),
+    ).toBeVisible()
   })
 
   it('refetches only the milestones a progress event names', async () => {

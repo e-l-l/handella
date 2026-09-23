@@ -14,7 +14,7 @@ import { createScheduler } from '../src/domain/scheduler.js'
 import type { TestContext } from './helpers.js'
 import {
   aDispatchedQueue,
-  aPlanAwaitingApproval,
+  aJobAwaitingApproval,
   aPullRequest,
   aReport,
   aTemporaryDirectory,
@@ -436,8 +436,8 @@ describe('slots', () => {
     const ids = await aDispatchedQueue(context, 4)
     const approved = ids.at(-1)
     if (approved === undefined) throw new Error('No job was dispatched')
-    const version = aPlanAwaitingApproval(context, approved)
-    context.store.approvePlan({ jobId: approved, planVersionId: version.id })
+    aJobAwaitingApproval(context, approved)
+    context.store.approveJob({ jobId: approved })
 
     const branch = branchOf(context, approved)
     const harness = aHarness(context, [approved], {

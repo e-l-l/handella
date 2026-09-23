@@ -5,8 +5,6 @@ import {
   MilestoneSchema,
   JobSchema,
   JobTransitionSchema,
-  PlanVersionSchema,
-  RequestPlanChangesSchema,
   QueueOrderRequestSchema,
   ReviewRoundSchema,
   RunbookSnapshotSchema,
@@ -28,10 +26,6 @@ import type { MergeCheck } from '../domain/merge-check.js'
 import type { Store } from '../domain/store.js'
 
 const JobIdParamsSchema = Type.Object({ jobId: Type.String() })
-const PlanVersionParamsSchema = Type.Object({
-  jobId: Type.String(),
-  planVersionId: Type.String(),
-})
 const AttemptParamsSchema = Type.Object({
   attemptId: Type.String(),
   jobId: Type.String(),
@@ -239,17 +233,6 @@ export const jobRoutes: FastifyPluginCallbackTypebox<{
   )
 
   app.get(
-    '/api/jobs/:jobId/plan-versions',
-    {
-      schema: {
-        params: JobIdParamsSchema,
-        response: { 200: Type.Array(PlanVersionSchema), ...errorResponses },
-      },
-    },
-    async (request) => store.listPlanVersions(request.params.jobId),
-  )
-
-  app.get(
     '/api/jobs/:jobId/runbook-snapshots',
     {
       schema: {
@@ -346,42 +329,21 @@ export const jobRoutes: FastifyPluginCallbackTypebox<{
   )
 
   /**
-   * The two answers a plan can get. Semantic rather than transitions, because
-   * each carries writes the move depends on: approval has a revision to mark
-   * and a runbook to freeze, a change request has feedback to record. The
-   * revision is in the path so a stale page cannot answer a plan the Handler
-   * never read — only the newest revision is accepted.
+   * The one answer a plan gets from the dashboard. Semantic rather than a
+   * transition, because the move carries a write it depends on: the Runbook in
+   * force is frozen against the job before it may enter `approved`. The other
+   * answers — questions, changes, a "go" — are typed into the Codex session,
+   * which is where the plan is (docs/adr/0015).
    */
   app.post(
-    '/api/jobs/:jobId/plan-versions/:planVersionId/approve',
+    '/api/jobs/:jobId/approve',
     {
       schema: {
-        params: PlanVersionParamsSchema,
+        params: JobIdParamsSchema,
         response: { 200: JobSchema, ...errorResponses },
       },
     },
-    async (request) =>
-      store.approvePlan({
-        jobId: request.params.jobId,
-        planVersionId: request.params.planVersionId,
-      }),
-  )
-
-  app.post(
-    '/api/jobs/:jobId/plan-versions/:planVersionId/request-changes',
-    {
-      schema: {
-        params: PlanVersionParamsSchema,
-        body: RequestPlanChangesSchema,
-        response: { 200: JobSchema, ...errorResponses },
-      },
-    },
-    async (request) =>
-      store.requestPlanChanges({
-        feedback: request.body.feedback,
-        jobId: request.params.jobId,
-        planVersionId: request.params.planVersionId,
-      }),
+    async (request) => store.approveJob({ jobId: request.params.jobId }),
   )
 
   /**

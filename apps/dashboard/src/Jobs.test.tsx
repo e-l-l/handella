@@ -327,13 +327,6 @@ describe('the housekeeping Reconciliation reports', () => {
     title: 'Worktrees no job claims',
   })
 
-  const overlap = anAttentionItem({
-    body: 'ENG-9 — Rework the session store also plans to touch:\n- src/store.ts',
-    id: '623e4567-e89b-42d3-a456-426614174000',
-    kind: 'overlapWarning',
-    title: 'Another job plans to touch the same files',
-  })
-
   it('names the paths it found and promises not to delete them', async () => {
     stubApi({ attention: [orphans], jobs: [] })
 
@@ -352,24 +345,8 @@ describe('the housekeeping Reconciliation reports', () => {
     expect(screen.queryByRole('link', { name: 'Open the job' })).toBeNull()
   })
 
-  it('says an overlap costs the jobs nothing', async () => {
-    stubApi({ attention: [overlap], jobs: [aJob({ state: 'approved' })] })
-
-    renderAt('/')
-
-    expect(
-      await screen.findByText('Another job plans to touch the same files'),
-    ).toBeInTheDocument()
-    expect(screen.getByText(/src\/store\.ts/)).toBeInTheDocument()
-    // masterplan.md:56 — a warning, and never a reason to serialise.
-    expect(screen.getByText(/nothing is serialised/)).toBeInTheDocument()
-  })
-
-  it('collects both behind one filter, away from the failures', async () => {
-    stubApi({
-      attention: [anAttentionItem(), orphans, overlap],
-      jobs: [],
-    })
+  it('collects it behind one filter, away from the failures', async () => {
+    stubApi({ attention: [anAttentionItem(), orphans], jobs: [] })
     const user = userEvent.setup()
 
     renderAt('/')
@@ -377,10 +354,7 @@ describe('the housekeeping Reconciliation reports', () => {
     await user.click(screen.getByRole('button', { name: /^Housekeeping/ }))
 
     expect(screen.getByText('Worktrees no job claims')).toBeInTheDocument()
-    expect(
-      screen.getByText('Another job plans to touch the same files'),
-    ).toBeInTheDocument()
-    // Neither is a Job that has stopped, so neither belongs with the blockers.
+    // Not a Job that has stopped, so it does not belong with the blockers.
     expect(screen.queryByText('Job stopped and needs a decision')).toBeNull()
   })
 })
@@ -583,14 +557,13 @@ describe('the job detail page', () => {
 
     renderAt(`/jobs/${aJob().id}`)
 
-    await userEvent.click(await screen.findByRole('tab', { name: 'Plan' }))
-    expect(await screen.findByText(/No plan captured yet/)).toBeInTheDocument()
-
-    await userEvent.click(screen.getByRole('tab', { name: 'Logs' }))
+    await userEvent.click(await screen.findByRole('tab', { name: 'Logs' }))
     expect(
       await screen.findByText(/No implementation turn has run yet/),
     ).toBeInTheDocument()
 
+    // The plan is read in the Codex session, so there is no tab for it here.
+    expect(screen.queryByRole('tab', { name: 'Plan' })).toBeNull()
     expect(screen.queryByRole('tab', { name: 'Changes' })).toBeNull()
   })
   it('offers no Suspend on a merged job, whose worktree is gone', async () => {
@@ -602,13 +575,31 @@ describe('the job detail page', () => {
     expect(within(menu).queryByRole('menuitem', { name: 'Suspend' })).toBeNull()
   })
 
-  it('leaves approving a plan to the Plan tab rather than the menu', async () => {
-    stubApi({ jobs: [aJob({ state: 'planReview' })] })
+  it('offers the approval as the banner’s primary and the session beside it', async () => {
+    stubApi({
+      jobs: [
+        aJob({
+          codexSessionId: 'session-1',
+          state: 'planReview',
+          worktreePath: '/Users/handler/.data/worktrees/repo/ell/eng-412',
+        }),
+      ],
+    })
 
     renderAt(`/jobs/${aJob().id}`)
 
-    // The service only lets a job into `approved` once a plan version is
-    // approved, so the bare move would be refused every time.
+    // The plan is read in the Codex session, so the page offers the way in
+    // and the approval, and no plan text of its own.
+    expect(
+      await screen.findByRole('button', { name: 'Approve plan' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: 'Open session' }),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/approve here when it is right/)).toBeVisible()
+
+    // The service only lets a job into `approved` with a runbook snapshot
+    // behind it, which approving writes, so the bare move would be refused.
     const menu = await openJobMenu()
     expect(
       within(menu).queryByRole('menuitem', { name: /Move to Approved/ }),
@@ -616,6 +607,29 @@ describe('the job detail page', () => {
     expect(
       within(menu).getByRole('menuitem', { name: /Move to Queued/ }),
     ).toBeInTheDocument()
+  })
+
+  it('approves through its own endpoint, not through a transition', async () => {
+    const fetchMock = stubApi({ jobs: [aJob({ state: 'planReview' })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Approve plan' }),
+    )
+
+    await waitFor(() => {
+      expect(postsTo(fetchMock, '/approve')).toHaveLength(1)
+    })
+    expect(postsTo(fetchMock, '/transitions')).toHaveLength(0)
+  })
+
+  it('stops offering the approval once the job has moved on', async () => {
+    stubApi({ jobs: [aJob({ state: 'approved' })] })
+
+    renderAt(`/jobs/${aJob().id}`)
+
+    await screen.findByText(aJob().title)
+    expect(screen.queryByRole('button', { name: 'Approve plan' })).toBeNull()
   })
 
   it('follows a pull request with no URL to the job, not to the plan', async () => {

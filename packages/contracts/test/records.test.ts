@@ -8,7 +8,6 @@ import {
   JobChangedSchema,
   JobSchema,
   JobTransitionSchema,
-  PlanVersionSchema,
   ReviewRoundSchema,
   RunbookSnapshotSchema,
   TransitionRequestSchema,
@@ -36,23 +35,6 @@ const validJob = {
   originalPrUrl: null,
   createdAt: now,
   updatedAt: now,
-}
-
-/** The smallest plan the schema accepts, spelled once. */
-const aPlanContent = {
-  summary: 'Make the login test wait for the session cookie.',
-  steps: [
-    {
-      id: 'await-cookie',
-      title: 'Await the session cookie',
-      detail: 'The assertion races the redirect.',
-      files: ['test/login.test.ts'],
-      required: true,
-    },
-  ],
-  verification: ['npm test -- login'],
-  risks: [],
-  outOfScope: [],
 }
 
 describe('job contract', () => {
@@ -174,66 +156,6 @@ describe('supporting record contracts', () => {
         resolvedAt: null,
       }),
     ).toBe(true)
-  })
-
-  it('accepts a pending plan version', () => {
-    expect(
-      Value.Check(PlanVersionSchema, {
-        id: jobId,
-        jobId,
-        revision: 1,
-        content: aPlanContent,
-        feedback: null,
-        approvalState: 'pending',
-        approvedAt: null,
-        createdAt: now,
-      }),
-    ).toBe(true)
-  })
-
-  it('carries the feedback behind a change request', () => {
-    expect(
-      Value.Check(PlanVersionSchema, {
-        id: jobId,
-        jobId,
-        revision: 2,
-        content: aPlanContent,
-        feedback: 'Cover the expired-token case too',
-        approvalState: 'changesRequested',
-        approvedAt: null,
-        createdAt: now,
-      }),
-    ).toBe(true)
-  })
-
-  it('rejects a plan that is text rather than a structured plan', () => {
-    expect(
-      Value.Check(PlanVersionSchema, {
-        id: jobId,
-        jobId,
-        revision: 1,
-        content: '# Plan\n\n1. Fix it',
-        feedback: null,
-        approvalState: 'pending',
-        approvedAt: null,
-        createdAt: now,
-      }),
-    ).toBe(false)
-  })
-
-  it('rejects a plan revision below one', () => {
-    expect(
-      Value.Check(PlanVersionSchema, {
-        id: jobId,
-        jobId,
-        revision: 0,
-        content: aPlanContent,
-        feedback: null,
-        approvalState: 'pending',
-        approvedAt: null,
-        createdAt: now,
-      }),
-    ).toBe(false)
   })
 
   it('accepts a runbook snapshot', () => {

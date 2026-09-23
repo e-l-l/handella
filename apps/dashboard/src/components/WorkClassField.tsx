@@ -77,7 +77,7 @@ export function WorkClassField({
       {/* What the choice costs, stated where it is made: a Routine is planned
           without the Handler, a Feature is not. */}
       <p className="text-[12px] text-ink-5">
-        Routine plans read-only in the worktree. Feature opens a terminal
+        Routine plans on its own in the worktree. Feature opens a terminal
         interview with{' '}
         <code className="font-mono text-mint-soft">/grill-with-docs</code>.
       </p>

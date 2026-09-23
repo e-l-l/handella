@@ -34,8 +34,6 @@ export const apiErrorCodes = [
   'attempt_not_found',
   'github_unavailable',
   'github_not_authenticated',
-  'plan_version_not_found',
-  'plan_content_invalid',
   'runbook_version_not_found',
   'cross_origin_refused',
   'validation_failed',

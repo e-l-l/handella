@@ -9,7 +9,6 @@ import type {
   JobSuspension,
   LinearPriority,
   MilestoneKind,
-  PlanApprovalState,
   StatusResponse,
   WorkClass,
 } from '@handella/contracts'
@@ -78,13 +77,6 @@ export const sourceLabels: Record<JobSource, string> = {
   linear: 'Assigned to you in Linear',
   slack: 'Forwarded from Slack',
   adhoc: 'Written by you',
-}
-
-/** Every revision is kept, so a revision the Handler has not read is a state. */
-export const planApprovalStateLabels: Record<PlanApprovalState, string> = {
-  pending: 'Waiting on you',
-  approved: 'Approved',
-  changesRequested: 'Changes requested',
 }
 
 /** Linear's scale, which runs the opposite way to most: 0 is no priority. */

@@ -244,21 +244,21 @@ export const codexPlanningFailed = (
   new DomainError('codex_planning_failed', 502, message, { cause })
 
 /**
- * A job that has already planned must replan in the same session, so the
- * revision is a turn in the conversation that produced the plan it answers.
- * Without the id there is no such conversation to continue.
+ * Implementation happens in the session that planned, so the plan the Handler
+ * approved is a conversation to resume. Without the id there is no such
+ * conversation.
  */
 export const codexSessionMissing = (jobId: string): DomainError =>
   new DomainError(
     'codex_session_missing',
     409,
-    `Job ${jobId} has a plan but no Codex session to revise it in`,
+    `Job ${jobId} has no Codex session to implement in`,
   )
 
 /**
  * Codex answered with something the report schema rejects, despite having been
- * given that schema. The same class of failure as `planContentInvalid`, and it
- * takes the same path.
+ * given that schema. Upstream, not a bug here — the same class of failure as a
+ * non-zero exit, and it takes the same path.
  */
 export const implementationReportInvalid = (
   message: string,
@@ -287,24 +287,6 @@ export const githubNotAuthenticated = (cause?: unknown): DomainError =>
     'The GitHub CLI is not logged in; run `gh auth login` and resume the job',
     { cause },
   )
-
-export const planVersionNotFound = (planVersionId: string): DomainError =>
-  new DomainError(
-    'plan_version_not_found',
-    404,
-    `No plan version with id ${planVersionId}`,
-  )
-
-/**
- * Codex answered with something the plan schema rejects, despite having been
- * given that schema. Upstream, not a bug here — the same class of failure as a
- * non-zero exit, and it takes the same path.
- */
-export const planContentInvalid = (
-  message: string,
-  cause?: unknown,
-): DomainError =>
-  new DomainError('plan_content_invalid', 502, message, { cause })
 
 /**
  * Version 1 is seeded when a database is opened, so an installation with no

@@ -148,37 +148,26 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       const issue = await linear.getIssue(job.linearIssueId)
       const runbook = store.activeRunbook()
 
-      // A job that has planned before is revising, and what it is revising
-      // against is the feedback on its newest revision. The plan itself is not
-      // sent: it is already in the session this pass resumes.
-      const feedback = store.latestPlanVersion(job.id)?.feedback ?? undefined
-
-      const result = await codex.plan({
-        feedback,
+      // Every planning pass is a fresh session. The plan is prose in that
+      // conversation, read and answered by the Handler in their terminal, so
+      // there is no revision to resume and nothing to store when it ends: the
+      // job moving to `planReview` is the whole of the record (docs/adr/0015).
+      await codex.plan({
         issue,
         job,
         // Written the moment Codex opens the session rather than when the pass
-        // ends. A first pass reasons for minutes, and until this lands the job
-        // has no session the Handler can open and no conversation a failed
-        // pass could be retried into — which is the whole of what a job in
-        // `planning` has to show for itself.
-        //
-        // Only when it is news. A revision resumes the session the job is
-        // already holding, and the write is not free: it bumps `updatedAt`
-        // and announces a `job.changed` every dashboard then refetches on.
+        // ends. A pass reasons for minutes, and until this lands the job has
+        // no session the Handler can open — which is the whole of what a job
+        // in `planning` has to show for itself.
         onSessionId: (sessionId) => {
-          if (sessionId !== job.codexSessionId) {
-            store.recordCodexSession({ jobId: job.id, sessionId })
-          }
+          store.recordCodexSession({ jobId: job.id, sessionId })
         },
         onSpawn: codexProcess.onSpawn,
         runbook: runbook.content,
-        sessionId: job.codexSessionId ?? undefined,
         signal: abort.signal,
         worktreePath: job.worktreePath,
       })
 
-      store.createPlanVersion({ content: result.content, jobId: job.id })
       store.transitionJob({
         actor: 'system',
         expectedState: 'planning',
@@ -415,13 +404,6 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       // is done and has nowhere to go — and that costs a whole turn.
       await github.checkAuth()
 
-      const plan = store.latestPlanVersion(job.id)
-      if (plan === undefined || plan.approvalState !== 'approved') {
-        throw transitionGuardFailed(
-          'A job cannot be implemented without an approved plan',
-        )
-      }
-
       // The snapshot rather than the active Runbook: this job approved against
       // what it said then, and the Handler may have rewritten it since.
       const snapshot = store.latestRunbookSnapshot(job.id)
@@ -467,7 +449,6 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
           announceProgress(job.id)
         },
         onSpawn: codexProcess.onSpawn,
-        plan: plan.content,
         round: started.round,
         runbook: snapshot.content,
         sessionId: job.codexSessionId,

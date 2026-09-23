@@ -3,12 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useId, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 
-import {
-  fetchJob,
-  fetchJobTransitions,
-  fetchPlanVersions,
-  jobKeys,
-} from '../api/jobs.ts'
+import { fetchJob, fetchJobTransitions, jobKeys } from '../api/jobs.ts'
 import { fetchRepositories, repositoryKeys } from '../api/repositories.ts'
 import { CopyButton } from '../components/CopyButton.tsx'
 import { Fact } from '../components/Fact.tsx'
@@ -16,7 +11,6 @@ import { CancelJobDialog, JobActionButton } from '../components/JobControls.tsx'
 import { JobLogs } from '../components/JobLogs.tsx'
 import { JobTimeline } from '../components/JobTimeline.tsx'
 import { OverflowMenu } from '../components/OverflowMenu.tsx'
-import { PlanReview } from '../components/PlanReview.tsx'
 import { Skeleton } from '../components/Skeleton.tsx'
 import { Tabs } from '../components/Tabs.tsx'
 import { Tag } from '../components/Tag.tsx'
@@ -24,6 +18,7 @@ import { useAttempts, useMilestones } from '../hooks/useAttempts.ts'
 import {
   useJobControls,
   type JobActionTarget,
+  type JobControls,
 } from '../hooks/useJobControls.ts'
 import { jobTag, needsYouHeading, needsYouReason } from '../jobPresentation.ts'
 import {
@@ -36,7 +31,6 @@ import {
   cardClass,
   cardTitleClass,
   destructiveOutlineButtonClass,
-  emptyPanelClass,
   helperClass,
   narrowRailGridClass,
   primaryButtonClass,
@@ -46,16 +40,13 @@ import {
 } from '../styles.ts'
 
 /**
- * Which sandbox Codex is under for this job right now. Planning reads and can
- * write nothing; implementation writes inside the worktree and reaches the
- * network, which is what lets it install dependencies, run the tests and open
- * the pull request (ADR 0010).
+ * What Handella changes about the Handler's own Codex configuration for the
+ * passes it runs unattended, and nothing else: the sandbox is theirs, because
+ * the session Handella opens is the one they go on to drive from a terminal
+ * (ADR 0016). Network is on so a fresh worktree can install and push (ADR 0010).
  */
-const sandboxOf = (job: Job): string => {
-  if (job.state === 'planning') return 'read-only'
-  if (job.state === 'implementing') return 'workspace-write · network'
-  return 'read-only until implementation'
-}
+const sessionOverrides =
+  'approvals off · network on · otherwise your Codex config'
 
 /**
  * Why a Job has no worktree, which is three different facts rather than one.
@@ -72,13 +63,13 @@ const worktreeAbsence = (state: Job['state']): string => {
   return 'not cut'
 }
 
-/** What resuming this job will change about the sandbox it runs under. */
+/** What the session holds, and what opening or approving it does. */
 const sessionConsequence = (job: Job): string => {
   if (job.codexSessionId === null)
-    return 'No session has been started. Dispatching plans read-only in the worktree; approving the plan is what switches the sandbox to workspace-write.'
+    return 'No session has been started. Dispatching starts one in the worktree, and the plan is proposed there.'
   if (job.state === 'implementing')
-    return 'Opening the session resumes it. It is being written to right now, and anything you send becomes a turn Handella’s next pass continues from.'
-  return 'Opening the session resumes it, which makes you a second voice in the conversation Handella’s next pass continues from.'
+    return 'Opening the session resumes it. It is being written to right now, and anything you send becomes a turn in the same conversation.'
+  return 'The plan is proposed in this session. Open the session to read it; approving freezes the runbook and continues the same session into implementation, which you can finish there.'
 }
 
 /** A rail card: a title, an optional tag beside it, and what it is about. */
@@ -118,11 +109,13 @@ function Card({
  */
 function StateBanner({
   action,
+  approve,
   job,
   pending,
   secondary,
 }: {
   action: JobActionTarget
+  approve: JobControls['approve']
   job: Job
   pending: boolean
   secondary: JobActionTarget | null
@@ -159,15 +152,26 @@ function StateBanner({
           </p>
         </div>
         <div className="ml-auto flex flex-none flex-wrap items-center gap-2">
-          {/* The plan is a tab on this very page, and the tab is read from
-              the URL, so "Review the plan" is followed as a link like any
-              other — in place, so Back leaves the job rather than the tab. */}
-          <JobActionButton
-            className={primaryButtonClass}
-            pending={pending}
-            replace
-            target={action}
-          />
+          {/* The plan is in the Codex session, not on this page, so a job
+              waiting on it offers the approval here and the session beside it:
+              read there, approve here. */}
+          {approve.offered ? (
+            <button
+              className={primaryButtonClass}
+              disabled={pending}
+              onClick={approve.act}
+              type="button"
+            >
+              {approve.pending ? 'Approving…' : 'Approve plan'}
+            </button>
+          ) : (
+            <JobActionButton
+              className={primaryButtonClass}
+              pending={pending}
+              replace
+              target={action}
+            />
+          )}
           {secondary === null ? null : (
             <JobActionButton
               className={secondaryButtonClass}
@@ -184,7 +188,6 @@ function StateBanner({
 
 const tabs = [
   { id: 'timeline', label: 'Timeline' },
-  { id: 'plan', label: 'Plan' },
   { id: 'logs', label: 'Logs' },
 ] as const
 
@@ -198,8 +201,8 @@ export function JobDetailPage() {
   const [params, setParams] = useSearchParams()
   const panelId = useId()
 
-  // The tab lives in the URL so the state banner's "Review the plan" can point
-  // at it, and so a Handler can send someone the logs rather than the page.
+  // The tab lives in the URL so a Handler can send someone the logs rather
+  // than the page.
   const fromUrl = params.get('tab')
   const tab: TabId = isTabId(fromUrl) ? fromUrl : 'timeline'
   const chooseTab = (next: TabId) => {
@@ -221,11 +224,6 @@ export function JobDetailPage() {
   const transitions = useQuery({
     queryKey: jobKeys.transitions(jobId),
     queryFn: () => fetchJobTransitions(jobId),
-    enabled: job.isSuccess,
-  })
-  const planVersions = useQuery({
-    queryKey: jobKeys.planVersions(jobId),
-    queryFn: () => fetchPlanVersions(jobId),
     enabled: job.isSuccess,
   })
   const attempts = useAttempts(jobId, job.isSuccess)
@@ -276,7 +274,6 @@ export function JobDetailPage() {
       milestones={milestones.data ?? []}
       onChooseTab={chooseTab}
       panelId={panelId}
-      plans={planVersions.data ?? []}
       repositoryName={
         repositories.data?.find(
           (repository) => repository.id === job.data.repositoryId,
@@ -299,7 +296,6 @@ function JobDetail({
   milestones,
   onChooseTab,
   panelId,
-  plans,
   repositoryName,
   tab,
   transitions,
@@ -309,7 +305,6 @@ function JobDetail({
   milestones: Parameters<typeof JobTimeline>[0]['milestones']
   onChooseTab: (tab: TabId) => void
   panelId: string
-  plans: Parameters<typeof PlanReview>[0]['versions']
   repositoryName: string | undefined
   tab: TabId
   transitions: Parameters<typeof JobTimeline>[0]['transitions']
@@ -317,7 +312,7 @@ function JobDetail({
   // One call for the whole screen: the banner, the header's `···` and the
   // danger zone are three views of the same set of moves, and three calls
   // would be three cancel flags and three copies of every mutation.
-  const { action, cancel, failure, overflow, pending, secondary } =
+  const { action, approve, cancel, failure, overflow, pending, secondary } =
     useJobControls(job)
   const tag = jobTag(job)
 
@@ -377,6 +372,7 @@ function JobDetail({
         <div className="flex min-w-0 flex-col gap-[18px]">
           <StateBanner
             action={action}
+            approve={approve}
             job={job}
             pending={pending}
             secondary={secondary}
@@ -402,15 +398,6 @@ function JobDetail({
                 milestones={milestones}
                 transitions={transitions}
               />
-            ) : tab === 'plan' ? (
-              plans.length === 0 ? (
-                <p className={emptyPanelClass}>
-                  No plan captured yet — the plan appears here once the planning
-                  session finishes.
-                </p>
-              ) : (
-                <PlanReview job={job} versions={plans} />
-              )
             ) : (
               <JobLogs attempts={attempts} jobId={job.id} />
             )}
@@ -460,11 +447,11 @@ function JobDetail({
             title="Codex session"
           >
             <dl className="flex flex-col gap-3">
-              {/* Stated rather than configurable: the sandbox is a guardrail,
-                  and no control in this dashboard may bypass it. Which one is
-                  in force depends on what the job is doing — planning reads,
-                  and only implementation may write and reach the network. */}
-              <Fact label="Sandbox" mono value={sandboxOf(job)} />
+              {/* Stated rather than configurable: no control in this dashboard
+                  may change what a pass runs under. The sandbox itself is not
+                  named because it is not Handella's — it is whatever the
+                  Handler's own Codex config says. */}
+              <Fact label="Overrides" value={sessionOverrides} />
             </dl>
             <p className={helperClass}>{sessionConsequence(job)}</p>
           </Card>

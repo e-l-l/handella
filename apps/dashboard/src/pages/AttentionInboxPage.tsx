@@ -43,10 +43,9 @@ import {
  * colour of a 4px rail down the left edge of its card.
  *
  * The handoff names two severities; Handella raises a third kind of thing.
- * `orphanWorktree` and `overlapWarning` are neither a Job that has stopped nor
- * a decision waiting on a signature — one is residue on disk that Handella
- * will never delete, the other is two Jobs that are both fine — so they get
- * amber, which in this palette means look rather than act.
+ * `orphanWorktree` is neither a Job that has stopped nor a decision waiting on
+ * a signature — it is residue on disk that Handella will never delete — so it
+ * gets amber, which in this palette means look rather than act.
  */
 type Severity = 'blocker' | 'housekeeping' | 'review'
 
@@ -58,7 +57,6 @@ const severities: Record<AttentionItemKind, Severity> = {
   readyPr: 'review',
   failure: 'blocker',
   orphanWorktree: 'housekeeping',
-  overlapWarning: 'housekeeping',
 }
 
 /** The rail, the card's border tint, and the tone its status tag wears. */
@@ -88,7 +86,6 @@ const kindTags: Record<AttentionItemKind, string> = {
   readyPr: 'pr ready',
   failure: 'failed',
   orphanWorktree: 'orphans',
-  overlapWarning: 'overlap',
 }
 
 /**
@@ -101,7 +98,7 @@ const kindTags: Record<AttentionItemKind, string> = {
  */
 const kindConsequences: Record<AttentionItemKind, string> = {
   planApproval:
-    'Nothing is written to the branch until you approve the plan, and approving resumes the same Codex session.',
+    'The plan is in the Codex session: open the session to read it, then approve on the job page. Nothing is written to the branch until you approve.',
   blocker: 'Nothing on this job moves until you answer it.',
   disputedReview: 'No reply is sent to the pull request until you send it.',
   conflictProposal: 'The original branch is not changed without your approval.',
@@ -109,16 +106,14 @@ const kindConsequences: Record<AttentionItemKind, string> = {
   failure: 'The branch, worktree, session and logs are all kept.',
   orphanWorktree:
     'Handella reports these directories and never deletes them. Removing one is yours to do.',
-  overlapWarning:
-    'Both jobs still run: nothing is serialised and neither is delayed.',
 }
 
 /**
  * The filters the handoff draws, spelled as the kinds behind them.
  *
  * Three in the drawing — All, Blockers, Reviews — and a fourth here for the
- * two kinds Reconciliation raises, which are neither: a Handler triaging
- * failures should not have orphaned directories in the same pass.
+ * kind Reconciliation raises, which is neither: a Handler triaging failures
+ * should not have orphaned directories in the same pass.
  *
  * Each carries an `id` that the label is free to change without: the chosen
  * filter outlives a reload, and display copy is not a storage key.
@@ -219,11 +214,7 @@ function AttentionCard({
     if (item.kind === 'readyPr' && prUrl !== null)
       return { href: prUrl, kind: 'reviewPr', label: 'Review pull request' }
     if (item.kind === 'planApproval' && jobPath !== null)
-      return {
-        kind: 'reviewPlan',
-        label: 'Review the plan',
-        to: `${jobPath}?tab=plan`,
-      }
+      return { kind: 'reviewPlan', label: 'Review the plan', to: jobPath }
     if (jobPath !== null)
       return { kind: 'open', label: 'Open the job', to: jobPath }
     return null

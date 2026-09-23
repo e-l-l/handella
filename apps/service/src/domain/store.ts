@@ -30,8 +30,6 @@ import {
   type MilestoneKind,
   type CreateRepository,
   type CreateRunbookVersion,
-  type PlanContent,
-  type PlanVersion,
   type Repository,
   type ReviewRound,
   type RunbookSnapshot,
@@ -61,13 +59,11 @@ import {
   attemptNotFound,
   attentionItemNotFound,
   canonicalBranchClaimed,
-  codexSessionMissing,
   dispatchNeedsLinearIssue,
   dispatchNeedsRepository,
   illegalTransition,
   jobNotFound,
   linearIssueAlreadyLinked,
-  planVersionNotFound,
   repositoryInUse,
   repositoryNotFound,
   runbookVersionNotFound,
@@ -77,13 +73,6 @@ import {
 } from './errors.js'
 import { attemptLogPathFor } from './attempt-log.js'
 import { parseImplementationReport } from './implementation-report.js'
-import { assertPlanContent, parsePlanContent } from './plan-content.js'
-import {
-  describeOverlaps,
-  plannedPaths,
-  sharedPaths,
-  type Overlap,
-} from './overlap.js'
 import {
   attentionItems,
   codexProcesses,
@@ -91,7 +80,6 @@ import {
   jobTransitions,
   jobs,
   milestones,
-  planVersions,
   repositories,
   reviewRounds,
   runbookSnapshots,
@@ -102,7 +90,6 @@ type JobRow = typeof jobs.$inferSelect
 type RepositoryRow = typeof repositories.$inferSelect
 type AttentionRow = typeof attentionItems.$inferSelect
 type TransitionRow = typeof jobTransitions.$inferSelect
-type PlanRow = typeof planVersions.$inferSelect
 type RunbookRow = typeof runbookSnapshots.$inferSelect
 type RunbookVersionRow = typeof runbookVersions.$inferSelect
 type ReviewRow = typeof reviewRounds.$inferSelect
@@ -177,14 +164,9 @@ export interface SuspendJobInput {
   suspension: JobSuspension
 }
 
-export interface ApprovePlanInput {
+export interface ApproveJobInput {
   expectedState?: JobState | undefined
   jobId: string
-  planVersionId: string
-}
-
-export interface RequestPlanChangesInput extends ApprovePlanInput {
-  feedback: string
 }
 
 export interface StartAttemptInput {
@@ -226,12 +208,13 @@ export interface Store {
    */
   abandonPlanningPass(input: { jobId: string; reason: string }): Job
   /**
-   * Approval in one transaction: the revision is marked, the Runbook in force
-   * is copied against the job, and only then does the job move. The guard on
-   * `approved` reads both of those writes, so doing them separately would be a
-   * job that is approved with nothing to execute.
+   * Approval in one transaction: the Runbook in force is copied against the
+   * job, and only then does the job move. The guard on `approved` reads that
+   * write, so doing them separately would be a job that is approved with
+   * nothing to execute. The plan itself is not a record: it is prose in the
+   * job's Codex session, read there by the Handler (docs/adr/0015).
    */
-  approvePlan(input: ApprovePlanInput): Job
+  approveJob(input: ApproveJobInput): Job
   /**
    * Opens the next implementation turn and numbers it. Joins the open round
    * while that round has turns left and its last one ended in a way Handella
@@ -248,10 +231,9 @@ export interface Store {
   recordMilestone(input: RecordMilestoneInput): Milestone
   listAttempts(jobId: string): Attempt[]
   /**
-   * The job's newest turn. Named for the reason `latestPlanVersion` is: the
-   * ordering that makes `listAttempts().at(-1)` the right row lives in the
-   * query, and a caller should not have to know it — or read every earlier
-   * turn's report to reach the last one.
+   * The job's newest turn. The ordering that makes `listAttempts().at(-1)` the
+   * right row lives in the query, and a caller should not have to know it — or
+   * read every earlier turn's report to reach the last one.
    */
   latestAttempt(jobId: string): Attempt | undefined
   listMilestones(jobId: string): Milestone[]
@@ -295,9 +277,7 @@ export interface Store {
   /** Every process Handella still believes is running, for the reap to check. */
   listLiveCodexProcesses(): CodexProcessRecord[]
   /**
-   * The merge GitHub has confirmed. Moves the job to `merged` and resolves the
-   * overlap warning it may be carrying, because a job whose work has landed is
-   * no longer about to touch anything.
+   * The merge GitHub has confirmed. Moves the job to `merged`.
    *
    * Does not touch the worktree: removing a directory is not a database write,
    * and whether it is safe to remove is a question only the filesystem can
@@ -331,8 +311,6 @@ export interface Store {
   reportOrphanWorktrees(input: { paths: readonly string[] }): boolean
   claimForDispatch(input: ClaimForDispatchInput): DispatchClaim
   createJob(input: CreateJob): Job
-  /** Numbering is per job and every revision is kept, approved or not. */
-  createPlanVersion(input: { content: PlanContent; jobId: string }): PlanVersion
   createRepository(input: CreateRepository): Repository
   /** Append-only: the new version becomes the active one by being the highest. */
   createRunbookVersion(input: CreateRunbookVersion): RunbookVersion
@@ -349,13 +327,6 @@ export interface Store {
   listAttentionItems(options?: { includeResolved?: boolean }): AttentionItem[]
   listJobTransitions(jobId: string): JobTransitionRecord[]
   listJobs(): Job[]
-  listPlanVersions(jobId: string): PlanVersion[]
-  /**
-   * The newest revision on its own, for the callers that only ever want that
-   * one. ADR 0007 puts no ceiling on how many a job accumulates, so reading
-   * the whole history to look at the end of it grows without bound.
-   */
-  latestPlanVersion(jobId: string): PlanVersion | undefined
   listReviewRounds(jobId: string): ReviewRound[]
   listRunbookSnapshots(jobId: string): RunbookSnapshot[]
   /** The snapshot a job approved against: its newest, and the only one a pass wants. */
@@ -379,8 +350,6 @@ export interface Store {
    */
   markInterrupted(): Job[]
   recordCodexSession(input: { jobId: string; sessionId: string }): Job
-  /** The Handler's feedback, and the job back to the queue to answer it. */
-  requestPlanChanges(input: RequestPlanChangesInput): Job
   recordWorktree(input: { jobId: string; worktreePath: string }): Job
   /**
    * The whole order in one write, so two jobs can never share a position.
@@ -465,16 +434,6 @@ const orphanWorktrees: AttentionRule = {
   title: 'Worktrees no job claims',
 }
 
-/**
- * Two live Jobs whose approved Plans name the same path. A warning and never a
- * refusal: masterplan.md:56 has predicted overlap warn without serialising,
- * and nothing reads this back.
- */
-const overlapWarning: AttentionRule = {
-  kind: 'overlapWarning',
-  title: 'Another job plans to touch the same files',
-}
-
 /** Derived, so leaving a rule table always clears exactly what entering it can raise. */
 const kindsOf = (
   rules: Readonly<Record<string, AttentionRule | undefined>>,
@@ -519,28 +478,12 @@ const requiresCanonicalBranch: TransitionGuard = (_tx, job) => {
 }
 
 /**
- * Approved means "ready to implement, and here is exactly what will be
- * implemented and how". Both halves are records, so both are checked: a job
- * that reached this state without them would hand Phase 6 nothing to execute.
+ * Approved means "ready to implement, and here is exactly how". The plan is
+ * prose in the Codex session and not a record, so the one record approval
+ * leaves is the Runbook Snapshot, and a job that reached this state without
+ * one would hand implementation nothing to execute by.
  */
-const requiresApprovedPlanAndSnapshot: TransitionGuard = (tx, job) => {
-  const approved = tx
-    .select({ id: planVersions.id })
-    .from(planVersions)
-    .where(
-      and(
-        eq(planVersions.jobId, job.id),
-        eq(planVersions.approvalState, 'approved'),
-      ),
-    )
-    .get()
-
-  if (approved === undefined) {
-    throw transitionGuardFailed(
-      'A job cannot be approved until one of its plan revisions has been',
-    )
-  }
-
+const requiresRunbookSnapshot: TransitionGuard = (tx, job) => {
   const snapshot = tx
     .select({ id: runbookSnapshots.id })
     .from(runbookSnapshots)
@@ -556,7 +499,7 @@ const requiresApprovedPlanAndSnapshot: TransitionGuard = (tx, job) => {
 
 const transitionGuards: Partial<Record<JobState, TransitionGuard>> = {
   queued: requiresCanonicalBranch,
-  approved: requiresApprovedPlanAndSnapshot,
+  approved: requiresRunbookSnapshot,
 }
 
 const toJob = (row: JobRow): Job => ({
@@ -607,17 +550,6 @@ const toTransition = (row: TransitionRow): JobTransitionRecord => ({
   actor: row.actor,
   reason: row.reason ?? null,
   occurredAt: row.occurredAt.toISOString(),
-})
-
-const toPlanVersion = (row: PlanRow): PlanVersion => ({
-  id: row.id,
-  jobId: row.jobId,
-  revision: row.revision,
-  content: parsePlanContent(row.content, 'A stored plan'),
-  feedback: row.feedback ?? null,
-  approvalState: row.approvalState,
-  approvedAt: row.approvedAt?.toISOString() ?? null,
-  createdAt: row.createdAt.toISOString(),
 })
 
 /**
@@ -1020,79 +952,6 @@ export function createStore(options: CreateStoreOptions): Store {
   }
 
   /**
-   * The job's newest plan revision, which is the only one the Handler may
-   * answer: approving or re-opening an older one would decide against a plan
-   * that has already been superseded.
-   */
-  const readNewestPlan = (
-    executor: Executor,
-    jobId: string,
-  ): PlanRow | undefined =>
-    executor
-      .select()
-      .from(planVersions)
-      .where(eq(planVersions.jobId, jobId))
-      .orderBy(desc(planVersions.revision))
-      .limit(1)
-      .get()
-
-  /**
-   * Every other live Job in this repository whose approved Plan names a path
-   * this one's does.
-   *
-   * Approved rather than merely planned: a revision the Handler has sent back
-   * is not what that Job is going to do, and warning about it would be warning
-   * about a plan that no longer exists. A Job whose newest revision is pending
-   * therefore counts for nothing here even if an earlier one was approved —
-   * what it will execute is the newest, and the newest is not settled.
-   */
-  const overlapsWith = (
-    tx: Transaction,
-    job: JobRow,
-    mine: ReadonlySet<string>,
-  ): Overlap[] => {
-    if (job.repositoryId === null || mine.size === 0) return []
-
-    const candidates = tx
-      .select()
-      .from(jobs)
-      .where(
-        and(
-          eq(jobs.repositoryId, job.repositoryId),
-          ne(jobs.id, job.id),
-          notInArray(jobs.state, [...settledJobStates]),
-        ),
-      )
-      .all()
-
-    const found: Overlap[] = []
-
-    for (const candidate of candidates) {
-      const plan = readNewestPlan(tx, candidate.id)
-      if (plan === undefined || plan.approvalState !== 'approved') continue
-
-      const paths = sharedPaths(
-        mine,
-        plannedPaths(
-          parsePlanContent(plan.content, `Plan revision ${plan.revision}`),
-        ),
-      )
-      if (paths.length === 0) continue
-
-      found.push({
-        jobId: candidate.id,
-        label:
-          candidate.linearIssueKey === null
-            ? candidate.title
-            : `${candidate.linearIssueKey} — ${candidate.title}`,
-        paths,
-      })
-    }
-
-    return found
-  }
-
-  /**
    * The one write that moves a Job's worktree column, in either direction:
    * Dispatch names the directory it cut, and the cleanup after a merge clears
    * the name once the directory is gone. The Job keeps everything else either
@@ -1115,20 +974,6 @@ export function createStore(options: CreateStoreOptions): Store {
     const job = toJob({ ...current, updatedAt: now, worktreePath })
     events.push(jobChanged(job))
     return job
-  }
-
-  const readLatestPlanVersion = (
-    tx: Transaction,
-    jobId: string,
-    planVersionId: string,
-  ): PlanRow => {
-    const row = readNewestPlan(tx, jobId)
-
-    if (row === undefined || row.id !== planVersionId) {
-      throw planVersionNotFound(planVersionId)
-    }
-
-    return row
   }
 
   const readActiveRunbook = (executor: Executor): RunbookVersionRow => {
@@ -1458,58 +1303,11 @@ export function createStore(options: CreateStoreOptions): Store {
       })
     },
 
-    createPlanVersion(input) {
+    approveJob(input) {
       return commit((tx, events, now) => {
-        const job = readJob(tx, input.jobId)
-
-        // Revisions are numbered per job and every one is kept, so the next one
-        // is read from the highest rather than assumed from whatever the caller
-        // last saw.
-        const highest =
-          tx
-            .select({ value: max(planVersions.revision) })
-            .from(planVersions)
-            .where(eq(planVersions.jobId, input.jobId))
-            .get()?.value ?? 0
-        const revision = highest + 1
-
-        // Checked here as well as where it arrived, because this is the write
-        // that makes the column's promise: everything read back out of it is a
-        // plan, without the reader having to ask.
-        assertPlanContent(input.content)
-
-        const row: PlanRow = {
-          id: newId(),
-          jobId: input.jobId,
-          revision,
-          content: JSON.stringify(input.content),
-          feedback: null,
-          approvalState: 'pending',
-          approvedAt: null,
-          createdAt: now,
-        }
-
-        tx.insert(planVersions).values(row).run()
-        events.push(jobChanged(toJob(job)))
-        // The content is already in hand and already checked, so it is handed
-        // back rather than serialised and parsed again to get where it was.
-        return { ...toPlanVersion(row), content: input.content }
-      })
-    },
-
-    approvePlan(input) {
-      return commit((tx, events, now) => {
-        const current = readJob(tx, input.jobId)
-        const version = readLatestPlanVersion(
-          tx,
-          input.jobId,
-          input.planVersionId,
-        )
-
-        tx.update(planVersions)
-          .set({ approvalState: 'approved', approvedAt: now })
-          .where(eq(planVersions.id, version.id))
-          .run()
+        // Read first so an unknown job is reported as one, rather than as the
+        // foreign key the snapshot below would otherwise trip over.
+        readJob(tx, input.jobId)
 
         // The text is copied, not referenced: a job has to be able to say what
         // it executed even after the Handler has rewritten settings. The id
@@ -1526,89 +1324,17 @@ export function createStore(options: CreateStoreOptions): Store {
           })
           .run()
 
-        const job = applyTransition(
-          tx,
-          {
-            actor: 'handler',
-            expectedState: input.expectedState,
-            jobId: input.jobId,
-            reason: `Approved plan revision ${version.revision}`,
-            to: 'approved',
-          },
-          now,
-          events,
-        )
-
-        // Computed here because this is the moment the file list becomes the
-        // one this job will execute: the revision is approved and a Runbook
-        // Snapshot has been taken against it. Raised and never read back — the
-        // scheduler is not told, so an overlap can only ever warn.
-        // The row as it was read at the top: what the candidate rule asks of
-        // it is its id and its repository, and a transition changes neither.
-        const overlaps = overlapsWith(
-          tx,
-          current,
-          plannedPaths(
-            parsePlanContent(
-              version.content,
-              `Plan revision ${version.revision}`,
-            ),
-          ),
-        )
-
-        if (overlaps.length > 0) {
-          // Nothing to resolve first: there is no edge out of `approved` back
-          // to a plan, so a Job is approved once and this runs once for it.
-          raiseItem(
-            tx,
-            openItemsOfKinds(tx, input.jobId, [overlapWarning.kind]),
-            {
-              body: describeOverlaps(overlaps),
-              jobId: input.jobId,
-              rule: overlapWarning,
-            },
-            now,
-            events,
-          )
-        }
-
-        return job
-      })
-    },
-
-    requestPlanChanges(input) {
-      return commit((tx, events, now) => {
-        const job = readJob(tx, input.jobId)
-        const version = readLatestPlanVersion(
-          tx,
-          input.jobId,
-          input.planVersionId,
-        )
-
-        // The revision is answered in the session that produced it, so the
-        // planner reads the feedback as the next turn rather than as a fresh
-        // brief. Refused here rather than left for the pass to discover,
-        // because the Handler is still on the page and can be told.
-        if (job.codexSessionId === null) {
-          throw codexSessionMissing(input.jobId)
-        }
-
-        tx.update(planVersions)
-          .set({ approvalState: 'changesRequested', feedback: input.feedback })
-          .where(eq(planVersions.id, version.id))
-          .run()
-
-        // Back to the queue rather than straight back into planning: the slot
-        // is the scheduler's to grant, and a job that walked into `planning`
-        // on its own would hold one with nothing running in it.
+        // The guard on `approved` reads the snapshot just written, so the
+        // insert comes first — and the whole thing is one transaction, so a
+        // refused move takes the snapshot down with it.
         return applyTransition(
           tx,
           {
             actor: 'handler',
             expectedState: input.expectedState,
             jobId: input.jobId,
-            reason: `Changes requested on plan revision ${version.revision}`,
-            to: 'queued',
+            reason: 'Approved the plan in the Codex session',
+            to: 'approved',
           },
           now,
           events,
@@ -1983,15 +1709,6 @@ export function createStore(options: CreateStoreOptions): Store {
           events,
         )
 
-        // The warning was about what this job was going to touch. It has
-        // touched it, and the pull request is in.
-        resolveItems(
-          tx,
-          openItemsOfKinds(tx, input.jobId, [overlapWarning.kind]),
-          now,
-          events,
-        )
-
         return job
       })
     },
@@ -2342,17 +2059,6 @@ export function createStore(options: CreateStoreOptions): Store {
       asc(jobTransitions.occurredAt),
       toTransition,
     ),
-
-    listPlanVersions: listForJob(
-      planVersions,
-      asc(planVersions.revision),
-      toPlanVersion,
-    ),
-
-    latestPlanVersion(jobId) {
-      const row = readNewestPlan(database, jobId)
-      return row === undefined ? undefined : toPlanVersion(row)
-    },
 
     listRunbookSnapshots: listForJob(
       runbookSnapshots,

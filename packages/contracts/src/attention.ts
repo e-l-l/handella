@@ -10,13 +10,11 @@ import {
 /**
  * The decisions and outcomes the masterplan puts in front of the Handler.
  *
- * `orphanWorktree` and `overlapWarning` are the two Reconciliation raises, and
- * both are kinds of their own rather than blockers: a blocker is a Job that
- * has stopped, and neither of these has. An orphan is residue on disk that no
- * Job claims, and an overlap is a warning about two Jobs that are both fine.
- * Having their own kinds is also what lets Reconciliation find the items it
- * raised last pass, which is how a standalone one is replaced rather than
- * duplicated.
+ * `orphanWorktree` is the one Reconciliation raises, and it is a kind of its
+ * own rather than a blocker: a blocker is a Job that has stopped, and an orphan
+ * is residue on disk that no Job claims. Having its own kind is also what lets
+ * Reconciliation find the item it raised last pass, which is how a standalone
+ * one is replaced rather than duplicated.
  */
 export const attentionItemKinds = [
   'planApproval',
@@ -26,7 +24,6 @@ export const attentionItemKinds = [
   'readyPr',
   'failure',
   'orphanWorktree',
-  'overlapWarning',
 ] as const
 
 export type AttentionItemKind = (typeof attentionItemKinds)[number]

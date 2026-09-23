@@ -6,7 +6,6 @@ import { createInterface } from 'node:readline'
 
 import {
   ImplementationReportSchema,
-  PlanContentSchema,
   codexIdleMs,
   codexTerminationGraceMs,
   implementationTimeoutMs,
@@ -16,7 +15,11 @@ import {
 import { codexPlanningFailed, codexUnavailable } from '../domain/errors.js'
 import { DomainError } from '../domain/errors.js'
 import { parseImplementationReport } from '../domain/implementation-report.js'
-import { parsePlanContent } from '../domain/plan-content.js'
+import {
+  implementationPrompt,
+  planningPrompt,
+  repairPrompt,
+} from '../domain/prompts.js'
 import type { Redactor } from '../domain/redact.js'
 import { commandEnv, onPath } from './command.js'
 import { signalProcessGroup } from './processes-ps.js'
@@ -52,173 +55,35 @@ const tailOf = (text: string): string =>
  * spelling on both paths, and no chance of a resumed turn running under weaker
  * isolation than the one it continues.
  *
+ * Everything else — the sandbox mode above all — is inherited from the
+ * Handler's own `~/.codex/config.toml`, because the session Handella opens is
+ * the session the Handler goes on to drive from their terminal, and two
+ * sandboxes for one conversation is a fact nobody would be told
+ * (docs/adr/0016).
+ *
  * - `approval_policy`: the Handler's config is `on-request`, and there is
  *   nobody here to ask. Never, so a command that needs approval fails rather
  *   than hangs.
  * - `notify`: their config fires a desktop notifier when a turn ends. Handella
  *   runs turns on its own schedule, and three jobs would mean three pop-ups for
  *   work the Handler did not just do.
+ * - `network_access`: a worktree is a fresh checkout holding no dependencies,
+ *   so the runbook's "run the repository's test suite" step has to install
+ *   them before it can run anything — and once the network is open the agent
+ *   can also push and open its own pull request, which is a better one than
+ *   Handella could write from outside the diff. What that costs, and how
+ *   Handella verifies the result rather than trusting it, is docs/adr/0010.
+ *   Only read under `workspace-write`; under any other mode it is inert.
+ *   `danger-full-access` is set nowhere.
  */
 const sharedOverrides: readonly string[] = [
   '-c',
   'approval_policy="never"',
   '-c',
   'notify=[]',
-]
-
-/** Planning reads. A planner that can write has already started implementing. */
-const planningOverrides: readonly string[] = [
-  '-c',
-  'sandbox_mode="read-only"',
-  ...sharedOverrides,
-]
-
-/**
- * Implementation writes, and reaches the network.
- *
- * A worktree is a fresh checkout holding no dependencies, so the runbook's
- * "run the repository's test suite" step has to install them before it can run
- * anything — and once the network is open the agent can also push and open its
- * own pull request, which is a better one than Handella could write from
- * outside the diff. What that costs, and how Handella verifies the result
- * rather than trusting it, is docs/adr/0010-network-in-the-implementation-sandbox.md.
- *
- * `workspace-write` still confines writes to the cwd, which is the worktree.
- * `danger-full-access` is never used.
- */
-const implementationOverrides: readonly string[] = [
-  '-c',
-  'sandbox_mode="workspace-write"',
   '-c',
   'sandbox_workspace_write.network_access=true',
-  ...sharedOverrides,
 ]
-
-const describeIssue = (issue: PlanningRequest['issue']): string =>
-  [
-    `Issue: ${issue.identifier} — ${issue.title}`,
-    `Linear: ${issue.url}`,
-    '',
-    issue.description ?? '(The issue has no description.)',
-  ].join('\n')
-
-/**
- * A first pass has to say everything. A revision says almost nothing, because
- * it is a turn in the session that produced the plan it answers: restating the
- * brief there would invite the planner to start over rather than to revise.
- */
-const planningPrompt = (input: PlanningRequest): string => {
-  if (input.sessionId !== undefined) {
-    return [
-      'The Handler reviewed your plan and asked for changes:',
-      '',
-      input.feedback ?? '(No feedback was recorded.)',
-      '',
-      'Revise the plan to answer that. Investigate again where the feedback',
-      'implies you got something wrong, rather than only rewording. Reply with',
-      'the complete revised plan as JSON matching the schema — not a diff, and',
-      'not only the parts that changed.',
-    ].join('\n')
-  }
-
-  return [
-    'You are planning a change to this repository. Plan it; do not make it.',
-    'You are running read-only and cannot write, so investigate as much as you',
-    'need to and propose the work rather than starting it.',
-    '',
-    describeIssue(input.issue),
-    '',
-    'The plan you produce will be implemented by another agent following this',
-    'runbook. Plan the work itself; do not restate the procedure below.',
-    '',
-    '--- runbook ---',
-    input.runbook,
-    '--- end runbook ---',
-    '',
-    `The work will be committed on the branch ${input.job.canonicalBranch ?? '(unknown)'},`,
-    `cut from ${input.job.baseBranch}.`,
-    '',
-    'Read the repository before you plan. Name real files and real symbols;',
-    'a step that names a file that does not exist is worse than a vague one.',
-    'Mark a step required when the change is wrong without it, and optional',
-    'when it is an improvement that could be dropped under pressure.',
-    '',
-    'Reply with JSON matching the schema you were given, and nothing else.',
-  ].join('\n')
-}
-
-const describePlan = (plan: ImplementationRequest['plan']): string =>
-  [
-    plan.summary,
-    '',
-    ...plan.steps.map(
-      (step, index) =>
-        `${index + 1}. ${step.title}${step.required ? '' : ' (optional)'}\n   ${step.detail}`,
-    ),
-    '',
-    'Verification:',
-    ...plan.verification.map((line) => `- ${line}`),
-    '',
-    'Out of scope:',
-    ...plan.outOfScope.map((line) => `- ${line}`),
-  ].join('\n')
-
-/**
- * The first turn carries the whole brief. A repair turn carries almost nothing,
- * for the reason a plan revision does: it resumes the session that already
- * holds the plan and the runbook, and restating them invites the agent to start
- * the work again rather than finish it.
- *
- * Neither turn is told how much budget is left. An agent told it is on its last
- * attempt takes shortcuts — disables a test, skips a check — which is the
- * opposite of what a repair turn is for.
- */
-const implementationPrompt = (input: ImplementationRequest): string => {
-  if (input.attempt > 1 || input.round > 1) {
-    return [
-      'The previous turn did not finish.',
-      '',
-      ...(input.unresolved.length > 0
-        ? [
-            'Still unresolved:',
-            '',
-            ...input.unresolved.map((item) => `- ${item}`),
-            '',
-          ]
-        : []),
-      'This worktree may hold partial, uncommitted work from that turn. Read',
-      '`git status` and the diff before you continue, rather than starting over.',
-      '',
-      'Finish the work, then complete the remaining steps of the runbook,',
-      'including opening the pull request. Reply with JSON matching the schema',
-      'you were given, and nothing else.',
-    ].join('\n')
-  }
-
-  return [
-    'The Handler approved this plan. Implement it.',
-    '',
-    describeIssue(input.issue),
-    '',
-    '--- approved plan ---',
-    describePlan(input.plan),
-    '--- end approved plan ---',
-    '',
-    'Carry it out by following this runbook exactly. The plan is the work; the',
-    'runbook is how work is done here, and it is the version this job approved',
-    'against rather than whatever it says today.',
-    '',
-    '--- runbook ---',
-    input.runbook,
-    '--- end runbook ---',
-    '',
-    `You are on the branch ${input.job.canonicalBranch ?? '(unknown)'}, cut from`,
-    `${input.job.baseBranch}. Stay on it. The pull request targets ${input.job.baseBranch}`,
-    'and is opened ready for review, not as a draft.',
-    '',
-    'Reply with JSON matching the schema you were given, and nothing else.',
-  ].join('\n')
-}
 
 const oneLine = (text: string): string => {
   const first = text.trim().split('\n')[0] ?? ''
@@ -604,7 +469,7 @@ export const createCodexAdapter = (
           'exec',
           'resume',
           input.sessionId,
-          ...implementationOverrides,
+          ...sharedOverrides,
           '--json',
           '--output-schema',
           schemaPath,
@@ -617,7 +482,10 @@ export const createCodexAdapter = (
         onLine: input.onLine,
         onMilestone: input.onMilestone,
         onSpawn: input.onSpawn,
-        prompt: implementationPrompt(input),
+        prompt:
+          input.attempt > 1 || input.round > 1
+            ? repairPrompt(input.unresolved)
+            : implementationPrompt(input),
         redact: options.redact,
         signal: input.signal,
         timeoutMs: implementationTimeoutMs,
@@ -671,74 +539,44 @@ export const createCodexAdapter = (
   },
 
   async plan(input: PlanningRequest): Promise<PlanningResult> {
-    return withScratch('handella-plan-', async (directory) => {
-      const schemaPath = join(directory, 'plan-schema.json')
-      const messagePath = join(directory, 'plan.json')
-      // The schema the model is held to is the schema the store validates
-      // against, written out of the same definition rather than restated.
-      writeFileSync(schemaPath, JSON.stringify(PlanContentSchema), {
-        mode: 0o600,
-      })
-
-      // Tested on the value rather than through a `resuming` flag, because
-      // narrowing does not survive the round trip through a boolean and the
-      // difference is one unchecked cast.
-      const ending = await runPass({
-        args: [
-          'exec',
-          ...(input.sessionId === undefined ? [] : ['resume', input.sessionId]),
-          ...planningOverrides,
-          ...(input.sessionId === undefined
-            ? ['--sandbox', 'read-only', '--cd', input.worktreePath]
-            : []),
-          '--json',
-          '--output-schema',
-          schemaPath,
-          '--output-last-message',
-          messagePath,
-          // `-` is the prompt, and means stdin. Passing it as an argument would
-          // put an issue description into a process listing.
-          '-',
-        ],
-        cwd: input.worktreePath,
-        label: 'Planning',
-        onSessionId: input.onSessionId,
-        onSpawn: input.onSpawn,
-        prompt: planningPrompt(input),
-        redact: options.redact,
-        signal: input.signal,
-        timeoutMs: planningTimeoutMs,
-      })
-
-      if (!ending.ok) {
-        throw codexPlanningFailed(
-          ending.kind === 'failed'
-            ? `Codex could not plan: ${ending.reason}`
-            : ending.reason,
-          new Error(ending.stderr || 'codex wrote nothing to stderr'),
-        )
-      }
-
-      if (ending.sessionId === undefined) {
-        throw codexPlanningFailed(
-          'Codex finished without reporting a session id',
-        )
-      }
-
-      let message: string
-      try {
-        message = readFileSync(messagePath, 'utf8')
-      } catch (error) {
-        throw codexPlanningFailed(
-          'Codex finished without writing a plan',
-          error,
-        )
-      }
-
-      return {
-        content: parsePlanContent(options.redact(message), "Codex's plan"),
-        sessionId: ending.sessionId,
-      }
+    // Always a fresh session, and never a schema: the plan is prose the
+    // Handler reads and answers in their terminal, so there is nothing for
+    // Handella to resume into and nothing for it to parse. `--cd` pins the
+    // worktree; the sandbox is whatever the Handler's config says.
+    const ending = await runPass({
+      args: [
+        'exec',
+        ...sharedOverrides,
+        '--cd',
+        input.worktreePath,
+        '--json',
+        // `-` is the prompt, and means stdin. Passing it as an argument would
+        // put an issue description into a process listing.
+        '-',
+      ],
+      cwd: input.worktreePath,
+      label: 'Planning',
+      onSessionId: input.onSessionId,
+      onSpawn: input.onSpawn,
+      prompt: planningPrompt(input),
+      redact: options.redact,
+      signal: input.signal,
+      timeoutMs: planningTimeoutMs,
     })
+
+    if (!ending.ok) {
+      throw codexPlanningFailed(
+        ending.kind === 'failed'
+          ? `Codex could not plan: ${ending.reason}`
+          : ending.reason,
+        new Error(ending.stderr || 'codex wrote nothing to stderr'),
+      )
+    }
+
+    if (ending.sessionId === undefined) {
+      throw codexPlanningFailed('Codex finished without reporting a session id')
+    }
+
+    return { sessionId: ending.sessionId }
   },
 })

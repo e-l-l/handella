@@ -7,7 +7,7 @@ import {
   aLinearIssueLink,
   anIntakeJob,
   aReviewRound,
-  aPlanAwaitingApproval,
+  aJobAwaitingApproval,
   cleanupTestContexts,
   createTestContext,
   testRepositoryId,
@@ -197,13 +197,13 @@ describe('the attention inbox', () => {
     const { context, jobId } = queuedJob()
     const { store } = context
 
-    const version = aPlanAwaitingApproval(context, jobId)
+    aJobAwaitingApproval(context, jobId)
 
     const open = store.listAttentionItems()
     expect(open).toHaveLength(1)
     expect(open[0]).toMatchObject({ jobId, kind: 'planApproval' })
 
-    store.approvePlan({ jobId, planVersionId: version.id })
+    store.approveJob({ jobId })
 
     expect(store.listAttentionItems()).toEqual([])
     expect(store.listAttentionItems({ includeResolved: true })).toHaveLength(1)
@@ -307,9 +307,9 @@ describe('the supporting records', () => {
     const runbook = context.store.createRunbookVersion({
       content: '1. Reproduce the failure',
     })
-    const version = aPlanAwaitingApproval(context, jobId)
+    aJobAwaitingApproval(context, jobId)
 
-    context.store.approvePlan({ jobId, planVersionId: version.id })
+    context.store.approveJob({ jobId })
     const snapshots = context.store.listRunbookSnapshots(jobId)
 
     expect(snapshots).toHaveLength(1)
@@ -323,8 +323,8 @@ describe('the supporting records', () => {
   it('freezes the runbook as it was, not as it later becomes', () => {
     const { context, jobId } = queuedJob()
     context.store.createRunbookVersion({ content: 'Run the suite' })
-    const version = aPlanAwaitingApproval(context, jobId)
-    context.store.approvePlan({ jobId, planVersionId: version.id })
+    aJobAwaitingApproval(context, jobId)
+    context.store.approveJob({ jobId })
 
     context.store.createRunbookVersion({ content: 'Run the suite twice' })
 
@@ -364,8 +364,8 @@ describe('the full lifecycle', () => {
     store.transitionJob({ actor: 'handler', jobId: job.id, to: 'queued' })
     // Approval is the one step with writes behind it, so it is taken the way
     // the Handler takes it rather than as a bare move.
-    const version = aPlanAwaitingApproval(context, job.id)
-    store.approvePlan({ jobId: job.id, planVersionId: version.id })
+    aJobAwaitingApproval(context, job.id)
+    store.approveJob({ jobId: job.id })
 
     for (const to of [
       'implementing',

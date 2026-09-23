@@ -12,7 +12,7 @@ import type { ProcessInspector } from '../src/adapters/processes.js'
 import type { MergeCheck } from '../src/domain/merge-check.js'
 
 import { buildApp } from '../src/app.js'
-import { aPlanContent, createFakeCodexAdapter } from './codex-fake.js'
+import { createFakeCodexAdapter } from './codex-fake.js'
 import { createFakeFolderPicker } from './folders-fake.js'
 import { createFakeGitAdapter } from './git-fake.js'
 import { createFakeGitHubAdapter } from './github-fake.js'
@@ -348,30 +348,25 @@ export const aDispatchedQueue = async (
 }
 
 /**
- * A job sitting in planReview with a plan to answer, which is the state every
- * approval and change-request test starts from. Walks the real path rather
- * than seeding rows: the session id and the revision are both things the
- * approval flow reads back.
+ * A job sitting in planReview, which is the state every approval test starts
+ * from. Walks the real path rather than seeding rows: the session id is what
+ * the implementation pass reads back, and the plan itself is prose in that
+ * session rather than a record here.
  */
-export function aPlanAwaitingApproval(
+export function aJobAwaitingApproval(
   context: TestContext,
   jobId: string,
   sessionId = 'session-1',
-) {
+): void {
   context.store.transitionJob({ actor: 'system', jobId, to: 'planning' })
   context.store.recordCodexSession({ jobId, sessionId })
-  const version = context.store.createPlanVersion({
-    content: aPlanContent(),
-    jobId,
-  })
   context.store.transitionJob({ actor: 'system', jobId, to: 'planReview' })
-  return version
 }
 
 /**
  * A job approved and waiting to be implemented, which is where every
  * implementation test starts. Walked rather than seeded: `approved` has a guard
- * behind it that reads both the approved revision and the runbook snapshot.
+ * behind it that reads the runbook snapshot approval writes.
  */
 export async function anApprovedJob(
   context: TestContext,
@@ -380,20 +375,20 @@ export async function anApprovedJob(
 ): Promise<string> {
   const [jobId] = await aDispatchedQueue(context, 1, options)
   if (jobId === undefined) throw new Error('No job was dispatched')
-  const version = aPlanAwaitingApproval(context, jobId, sessionId)
-  context.store.approvePlan({ jobId, planVersionId: version.id })
+  aJobAwaitingApproval(context, jobId, sessionId)
+  context.store.approveJob({ jobId })
   return jobId
 }
 
 /**
  * A job walked all the way to merged, which is what ADR 0004's round counting
  * needs behind an issue. Approval is taken properly rather than as a bare
- * move, because a job cannot reach `approved` without a plan and a snapshot.
+ * move, because a job cannot reach `approved` without a snapshot.
  */
 export function aMergedJob(context: TestContext, jobId: string): void {
   context.store.transitionJob({ actor: 'handler', jobId, to: 'queued' })
-  const version = aPlanAwaitingApproval(context, jobId)
-  context.store.approvePlan({ jobId, planVersionId: version.id })
+  aJobAwaitingApproval(context, jobId)
+  context.store.approveJob({ jobId })
 
   for (const to of ['implementing', 'prOpen', 'merged'] as const) {
     context.store.transitionJob({ actor: 'handler', jobId, to })

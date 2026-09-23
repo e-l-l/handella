@@ -6,7 +6,6 @@ import {
   jobStates,
   jobSuspensions,
   milestoneKinds,
-  planApprovalStates,
   settledJobStates,
   transitionActors,
   workClasses,
@@ -216,40 +215,6 @@ export const attentionItems = sqliteTable(
       table.createdAt,
     ),
     index('attention_items_job_id_idx').on(table.jobId),
-  ],
-)
-
-/**
- * `content` holds the structured plan as JSON text. The shape is
- * `PlanContentSchema`, and the store validates against it on the way in, so
- * this column cannot hold something the contract says it does not.
- */
-export const planVersions = sqliteTable(
-  'plan_versions',
-  {
-    id: text('id').primaryKey(),
-    jobId: text('job_id')
-      .notNull()
-      .references(() => jobs.id, { onDelete: 'cascade' }),
-    revision: integer('revision').notNull(),
-    content: text('content').notNull(),
-    feedback: text('feedback'),
-    approvalState: text('approval_state', {
-      enum: planApprovalStates,
-    }).notNull(),
-    approvedAt: integer('approved_at', { mode: 'timestamp_ms' }),
-    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
-  },
-  (table) => [
-    check(
-      'plan_versions_approval_state_check',
-      oneOf(table.approvalState, planApprovalStates),
-    ),
-    check('plan_versions_revision_check', sql`${table.revision} >= 1`),
-    uniqueIndex('plan_versions_job_id_revision_unique').on(
-      table.jobId,
-      table.revision,
-    ),
   ],
 )
 

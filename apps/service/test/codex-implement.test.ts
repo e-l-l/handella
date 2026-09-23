@@ -12,7 +12,6 @@ import type {
 } from '../src/adapters/codex.js'
 import { createRedactor } from '../src/domain/redact.js'
 import {
-  aPlanContent,
   aTemporaryDirectory,
   cleanupTestContexts,
   aLinearIssue,
@@ -118,7 +117,6 @@ const aRequest = (
     onLine: (text) => lines.push(text),
     onMilestone: (milestone) => milestones.push(milestone),
     onSpawn: (pid) => pids.push(pid),
-    plan: aPlanContent(),
     round: 1,
     runbook: '# runbook',
     sessionId: 'session-7',
@@ -143,7 +141,7 @@ const completedReport = {
 }
 
 describe('the implementation pass', () => {
-  it('resumes the session under a writable sandbox with network access', async () => {
+  it('resumes the session under the Handler’s own sandbox, approvals off and network on', async () => {
     const stub = aStubCodex(aReportBody(completedReport))
     const codex = await anAdapter(stub.directory)
 
@@ -151,10 +149,12 @@ describe('the implementation pass', () => {
 
     const argv = readFileSync(stub.argvPath, 'utf8').split('\n')
     expect(argv.slice(0, 3)).toEqual(['exec', 'resume', 'session-7'])
-    expect(argv).toContain('sandbox_mode="workspace-write"')
+    // The sandbox mode is not Handella's to say: it is inherited from the
+    // Handler's config, so no spelling of it appears here (ADR 0016).
+    expect(argv.some((arg) => arg.startsWith('sandbox_mode='))).toBe(false)
     expect(argv).toContain('sandbox_workspace_write.network_access=true')
     expect(argv).toContain('approval_policy="never"')
-    expect(argv).not.toContain('sandbox_mode="danger-full-access"')
+    expect(argv).toContain('notify=[]')
     // The prompt is stdin, never an argument: an issue description must not
     // reach a process listing.
     expect(argv).toContain('-')

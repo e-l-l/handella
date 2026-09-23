@@ -6,7 +6,6 @@ import type {
   JobSuspension,
   JobTransitionRecord,
   Milestone,
-  PlanVersion,
 } from '@handella/contracts'
 
 import { useQueryClient } from '@tanstack/react-query'
@@ -33,13 +32,12 @@ export const jobKeys = {
    * job nobody is looking at.
    */
   milestones: (jobId: string) => ['jobs', jobId, 'milestones'] as const,
-  planVersions: (jobId: string) => ['jobs', jobId, 'plan-versions'] as const,
   transitions: (jobId: string) => ['jobs', jobId, 'transitions'] as const,
 }
 
 /**
  * What to invalidate after anything that acts on a job. Moving, suspending or
- * answering a plan also opens and resolves attention items, so both caches go
+ * approving a plan also opens and resolves attention items, so both caches go
  * stale together and every mutation on a job settles through this.
  */
 export const useJobRefresh = (): (() => Promise<void>) => {
@@ -61,10 +59,6 @@ export const fetchJob = async (jobId: string): Promise<Job> =>
 export const fetchJobTransitions = async (
   jobId: string,
 ): Promise<JobTransitionRecord[]> => request(`/api/jobs/${jobId}/transitions`)
-
-export const fetchPlanVersions = async (
-  jobId: string,
-): Promise<PlanVersion[]> => request(`/api/jobs/${jobId}/plan-versions`)
 
 export const fetchAttempts = async (jobId: string): Promise<Attempt[]> =>
   request(`/api/jobs/${jobId}/attempts`)
@@ -163,23 +157,9 @@ export const reorderQueue = async (jobIds: string[]): Promise<Job[]> =>
   request('/api/queue/order', { body: { jobIds }, method: 'POST' })
 
 /**
- * The revision is in the path rather than implied, so a page left open while
- * the plan moved on answers the revision it was showing and is told no.
+ * Approves the plan in the job's Codex session. No revision in the path: the
+ * plan is prose the Handler has read in the terminal, and the service freezes
+ * the runbook and moves the job in one write.
  */
-export const approvePlan = async (
-  jobId: string,
-  planVersionId: string,
-): Promise<Job> =>
-  request(`/api/jobs/${jobId}/plan-versions/${planVersionId}/approve`, {
-    method: 'POST',
-  })
-
-export const requestPlanChanges = async (
-  jobId: string,
-  planVersionId: string,
-  feedback: string,
-): Promise<Job> =>
-  request(`/api/jobs/${jobId}/plan-versions/${planVersionId}/request-changes`, {
-    body: { feedback },
-    method: 'POST',
-  })
+export const approveJob = async (jobId: string): Promise<Job> =>
+  request(`/api/jobs/${jobId}/approve`, { method: 'POST' })
