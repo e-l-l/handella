@@ -1,135 +1,109 @@
 import type {
   Attempt,
+  Job,
   JobTransitionRecord,
   Milestone,
 } from '@handella/contracts'
 import { isAttemptRunning } from '@handella/contracts'
-import { useQuery } from '@tanstack/react-query'
-import { memo, useMemo, useState } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 
-import { fetchAttemptLog, jobKeys } from '../api/jobs.ts'
+import { waitingSince } from '../jobPresentation.ts'
 import {
   attemptLabel,
-  attemptOutcomeLabels,
+  attemptOutcomeLabel,
+  formatClock,
   formatDuration,
-  formatTimestamp,
   milestoneKindLabels,
   stateLabels,
 } from '../labels.ts'
 
 /**
- * Mint has finished or is healthy (`Chip`), and a job that was cancelled did
- * neither: the move happened, but it ended the job rather than advancing it,
- * so it is marked rather than ticked.
+ * The three nodes the handoff draws on the spine.
+ *
+ * `current` is amber because amber waits: the newest node on a job that has
+ * stopped is the one the Handler is standing at. `passed` is a mint tick.
+ * `ended` is neither — a cancelled job's last move happened, but it ended the
+ * job rather than advancing it, so it is marked rather than ticked.
  */
-const glyphs: Record<
-  'ended' | 'passed' | 'running',
+const nodes: Record<
+  'current' | 'ended' | 'passed',
   { className: string; mark: string }
 > = {
+  current: {
+    className: 'border-amber/[0.45] bg-amber/[0.18] text-amber text-[10px]',
+    mark: '●',
+  },
   ended: {
-    className: 'border-line-strong bg-raised-alt text-ink-4',
+    className: 'border-line-strong bg-control text-ink-4 text-[10px]',
     mark: '·',
   },
   passed: {
-    className: 'border-mint/40 bg-mint/[0.18] text-mint',
+    className: 'border-mint/40 bg-mint/[0.16] text-mint text-[9px]',
     mark: '✓',
   },
-  running: {
-    className: 'border-mint/40 bg-mint/[0.08] text-mint',
-    mark: '▸',
-  },
-}
-
-/** A turn that ended with nothing to show for it is marked, not ticked. */
-const attemptGlyph = (attempt: Attempt) => {
-  if (isAttemptRunning(attempt)) return glyphs.running
-  return attempt.outcome === 'reportedDone' ? glyphs.passed : glyphs.ended
 }
 
 /**
- * One row of the spine. The glyph and the connector live here rather than in
+ * One row of the spine. The node and the connector live here rather than in
  * each kind of beat, so a transition and an attempt line up on the same rail.
  */
 function Beat({
   children,
-  glyph,
   last,
+  node,
 }: {
-  children: React.ReactNode
-  glyph: { className: string; mark: string }
+  children: ReactNode
   last: boolean
+  node: { className: string; mark: string }
 }) {
   return (
-    <li className="grid grid-cols-[26px_1fr] gap-3.5">
+    <li className="grid grid-cols-[22px_1fr] gap-3.5">
       <div className="flex flex-col items-center">
         <span
           aria-hidden="true"
-          className={`grid size-[22px] place-items-center rounded-full border font-mono text-[10.5px] ${glyph.className}`}
+          className={`grid size-[18px] flex-none place-items-center rounded-full border font-mono leading-none ${node.className}`}
         >
-          {glyph.mark}
+          {node.mark}
         </span>
         {last ? null : (
           <span
             aria-hidden="true"
-            className="min-h-[26px] w-px flex-1 bg-mint-soft/12"
+            className="min-h-[22px] w-px flex-1 bg-mint-soft/[0.12]"
           />
         )}
       </div>
-      <div className="pb-4">{children}</div>
+      <div className="min-w-0 pb-[18px]">{children}</div>
     </li>
   )
 }
 
-/**
- * The raw stream, fetched only when the Handler opens it. A tail by default:
- * a ninety-minute turn is megabytes of JSONL, and the end of it is the part
- * that says what happened.
- */
-function RawLog({ attemptId, jobId }: { attemptId: string; jobId: string }) {
-  const [full, setFull] = useState(false)
-  const log = useQuery({
-    queryKey: [...jobKeys.attemptLog(jobId, attemptId), full],
-    queryFn: () => fetchAttemptLog(jobId, attemptId, { full }),
-    // The key sits under the `jobs` prefix, so every `job.changed` would
-    // otherwise re-download an open log — a quarter of a megabyte by default,
-    // and the whole file once the Handler has asked for all of it. A finished
-    // turn's log does not change, and a running one's tail is a deliberate ask.
-    staleTime: Infinity,
-  })
-
-  if (log.isPending) {
-    return (
-      <p className="mt-2 text-[12.5px] text-ink-4" role="status">
-        Reading the log…
-      </p>
-    )
-  }
-
-  if (log.data === undefined) {
-    return (
-      <p className="mt-2 text-[12.5px] text-amber" role="alert">
-        {log.error?.message ?? 'That log could not be read.'}
-      </p>
-    )
-  }
-
+/** The title line every beat shares: what happened, and when. */
+function BeatHead({
+  at,
+  current = false,
+  title,
+}: {
+  at: string
+  current?: boolean
+  title: string
+}) {
   return (
-    <div className="mt-2">
-      {log.data.truncated ? (
-        <button
-          className="mb-2 font-mono text-[11px] text-ink-4 underline"
-          onClick={() => setFull(true)}
-          type="button"
-        >
-          Showing the end of this log · load all of it
-        </button>
-      ) : null}
-      <pre className="max-h-80 overflow-auto rounded-xl bg-surface p-3 font-mono text-[11px] leading-[1.5] text-ink-3">
-        {log.data.text === '' ? 'This log is no longer kept.' : log.data.text}
-      </pre>
+    <div className="flex items-center gap-2.5">
+      <p
+        className={`min-w-0 text-[14.5px] ${
+          current ? 'font-[550] text-ink' : 'font-medium text-ink-2'
+        }`}
+      >
+        {title}
+      </p>
+      <span className="ml-auto flex-none font-mono text-[11px] text-ink-6">
+        {formatClock(at)}
+      </span>
     </div>
   )
 }
+
+const beatBodyClass = 'mt-[5px] text-[13px] leading-[1.55] text-ink-3'
 
 // Memoised because the spine invalidates about once a second while a turn
 // runs, and React Query's structural sharing keeps the identity of every
@@ -142,97 +116,28 @@ const MilestoneRow = memo(function MilestoneRow({
   const failed = milestone.exitCode !== null && milestone.exitCode !== 0
 
   return (
-    <li className="py-1">
-      <div className="flex items-baseline gap-2.5">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.5px] text-ink-5">
-          {milestoneKindLabels[milestone.kind]}
-        </span>
+    <li className="flex flex-wrap items-baseline gap-2.5 py-1">
+      <span className="font-mono text-[10.5px] uppercase tracking-[0.09em] text-ink-5">
+        {milestoneKindLabels[milestone.kind]}
+      </span>
+      <span
+        className={`min-w-0 font-mono text-[12px] ${failed ? 'text-amber-ink' : 'text-ink-2'}`}
+      >
+        {milestone.summary}
+      </span>
+      {milestone.exitCode === null ? null : (
         <span
-          className={`font-mono text-[12px] ${failed ? 'text-amber' : 'text-ink-2'}`}
+          className={`font-mono text-[11px] ${failed ? 'text-amber-ink' : 'text-ink-5'}`}
         >
-          {milestone.summary}
+          exit {milestone.exitCode}
         </span>
-        {milestone.exitCode === null ? null : (
-          <span
-            className={`font-mono text-[11px] ${failed ? 'text-amber' : 'text-ink-5'}`}
-          >
-            exit {milestone.exitCode}
-          </span>
-        )}
-        <span className="ml-auto font-mono text-[10.5px] text-ink-6">
-          {formatTimestamp(milestone.occurredAt)}
-        </span>
-      </div>
-      {milestone.detail === null ? null : (
-        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg bg-surface px-2.5 py-2 font-mono text-[11px] leading-[1.5] text-ink-4">
-          {milestone.detail}
-        </pre>
       )}
+      <span className="ml-auto font-mono text-[10.5px] text-ink-6">
+        {formatClock(milestone.occurredAt)}
+      </span>
     </li>
   )
 })
-
-/**
- * One turn, with its beats inside it. Open while it is running and closed once
- * it is over: the turn the Handler is watching is the one they have not read,
- * and a finished job should not unroll three hundred rows on arrival.
- */
-function AttemptGroup({
-  attempt,
-  jobId,
-  milestones,
-}: {
-  attempt: Attempt
-  jobId: string
-  milestones: Milestone[]
-}) {
-  const running = isAttemptRunning(attempt)
-  const [showLog, setShowLog] = useState(false)
-
-  const outcome =
-    attempt.outcome === null ? 'running' : attemptOutcomeLabels[attempt.outcome]
-
-  return (
-    <details open={running}>
-      <summary className="flex cursor-pointer items-center gap-3 text-[14.5px] font-medium text-ink-2">
-        {attemptLabel(attempt, 'Attempt')}
-        <span className="font-mono text-[11px] text-ink-4">{outcome}</span>
-        <span className="ml-auto font-mono text-[11px] text-ink-6">
-          {formatDuration(attempt.startedAt, attempt.endedAt)}
-        </span>
-      </summary>
-
-      {milestones.length === 0 ? (
-        <p className="mt-2 text-[13px] text-ink-4">
-          {running
-            ? 'Waiting for the first milestone…'
-            : 'This turn said nothing.'}
-        </p>
-      ) : (
-        <ol className="mt-2">
-          {milestones.map((milestone) => (
-            <MilestoneRow key={milestone.id} milestone={milestone} />
-          ))}
-        </ol>
-      )}
-
-      {attempt.failureReason === null ? null : (
-        <p className="mt-2 text-[13px] leading-[1.55] text-amber">
-          {attempt.failureReason}
-        </p>
-      )}
-
-      <button
-        className="mt-2 font-mono text-[11px] text-ink-4 underline"
-        onClick={() => setShowLog((open) => !open)}
-        type="button"
-      >
-        {showLog ? 'Hide raw log' : 'Raw log'}
-      </button>
-      {showLog ? <RawLog attemptId={attempt.id} jobId={jobId} /> : null}
-    </details>
-  )
-}
 
 type SpineBeat =
   | { at: string; attempt: Attempt; kind: 'attempt' }
@@ -241,19 +146,26 @@ type SpineBeat =
 /**
  * Where the job has been and what it did while it was there, on one spine.
  *
+ * **Newest first**, which the revamp changed: the entry a Handler opening a
+ * stuck job needs is the last thing that happened, and it used to be at the
+ * bottom of a list that grows all day.
+ *
  * Interleaved by time rather than nested under a transition, because a round of
  * repair turns happens without the job moving at all: three attempts sit
  * between `approved -> implementing` and `implementing -> prOpen`, and a spine
  * that hung them off the transition could not say that.
+ *
+ * The raw logs used to be folded into each turn here. They are their own tab
+ * now: a megabyte of JSONL is not a beat on a timeline.
  */
 export function JobTimeline({
   attempts,
-  jobId,
+  job,
   milestones,
   transitions,
 }: {
   attempts: Attempt[]
-  jobId: string
+  job: Job
   milestones: Milestone[]
   transitions: JobTransitionRecord[]
 }) {
@@ -264,11 +176,8 @@ export function JobTimeline({
     const groups = new Map<string, Milestone[]>()
     for (const milestone of milestones) {
       const group = groups.get(milestone.attemptId)
-      if (group === undefined) {
-        groups.set(milestone.attemptId, [milestone])
-      } else {
-        group.push(milestone)
-      }
+      if (group === undefined) groups.set(milestone.attemptId, [milestone])
+      else group.push(milestone)
     }
     return groups
   }, [milestones])
@@ -286,31 +195,106 @@ export function JobTimeline({
           attempt,
           kind: 'attempt',
         })),
-      ].sort((left, right) => left.at.localeCompare(right.at)),
+      ].sort((left, right) => right.at.localeCompare(left.at)),
     [attempts, transitions],
   )
 
-  if (beats.length === 0) {
-    return <p className="text-[13px] text-ink-3">This job has not moved yet.</p>
+  /**
+   * The synthetic newest node, for a job that is not moving. The handoff draws
+   * it as "Waiting on you since 13:02", and it is the whole reason the spine is
+   * newest-first: it is the sentence that says the job is stopped rather than
+   * slow, and it sits above the move that stopped it.
+   */
+  const waiting = waitingSince(job)
+
+  if (beats.length === 0 && waiting === null) {
+    return (
+      <p className="text-[13px] leading-[1.55] text-ink-3">
+        This job has not moved yet. Its first entry appears here the moment
+        Handella dispatches or plans it.
+      </p>
+    )
   }
 
   return (
     <ol className="flex flex-col">
+      {waiting === null ? null : (
+        <Beat last={beats.length === 0} node={nodes.current}>
+          <BeatHead
+            at={job.updatedAt}
+            current
+            title={`Waiting on you since ${formatClock(job.updatedAt)}`}
+          />
+          <p className={beatBodyClass}>{waiting}</p>
+        </Beat>
+      )}
+
       {beats.map((beat, index) => {
         const last = index === beats.length - 1
 
         if (beat.kind === 'attempt') {
+          const { attempt } = beat
+          const running = isAttemptRunning(attempt)
+          const rows = byAttempt.get(attempt.id) ?? []
+
           return (
             <Beat
-              glyph={attemptGlyph(beat.attempt)}
-              key={beat.attempt.id}
+              key={attempt.id}
               last={last}
+              node={
+                running
+                  ? nodes.current
+                  : attempt.outcome === 'reportedDone'
+                    ? nodes.passed
+                    : nodes.ended
+              }
             >
-              <AttemptGroup
-                attempt={beat.attempt}
-                jobId={jobId}
-                milestones={byAttempt.get(beat.attempt.id) ?? []}
+              <BeatHead
+                at={attempt.startedAt}
+                current={running}
+                title={`${attemptLabel(attempt, 'Attempt')} · ${attemptOutcomeLabel(
+                  attempt,
+                )}`}
               />
+              {rows.length === 0 ? (
+                <p className={beatBodyClass}>
+                  {formatDuration(attempt.startedAt, attempt.endedAt)}
+                  {running
+                    ? ' · waiting for the first milestone'
+                    : ' · this turn said nothing'}
+                </p>
+              ) : (
+                /* Folded away, and open only while the turn is running.
+
+                   A ninety-minute turn writes forty milestones, and rendering
+                   them inline put three thousand pixels of command output
+                   between the newest entry and the transitions underneath it —
+                   which is the spine the Handler came to read. The count is on
+                   the summary, so what is hidden is still announced. */
+                <details className="group" open={running}>
+                  <summary
+                    className={`cursor-pointer list-none ${beatBodyClass} hover:text-ink-2`}
+                  >
+                    {formatDuration(attempt.startedAt, attempt.endedAt)} ·{' '}
+                    {rows.length} milestone{rows.length === 1 ? '' : 's'}
+                    <span aria-hidden="true" className="text-ink-5">
+                      {' '}
+                      · <span className="group-open:hidden">show</span>
+                      <span className="hidden group-open:inline">hide</span>
+                    </span>
+                  </summary>
+                  <ol className="mt-2 border-l border-line pl-3">
+                    {rows.map((milestone) => (
+                      <MilestoneRow key={milestone.id} milestone={milestone} />
+                    ))}
+                  </ol>
+                </details>
+              )}
+              {attempt.failureReason === null ? null : (
+                <p className="mt-1.5 text-[13px] leading-[1.55] text-amber-ink">
+                  {attempt.failureReason}
+                </p>
+              )}
             </Beat>
           )
         }
@@ -318,20 +302,17 @@ export function JobTimeline({
         const { transition } = beat
         return (
           <Beat
-            glyph={
-              transition.toState === 'cancelled' ? glyphs.ended : glyphs.passed
-            }
             key={transition.id}
             last={last}
+            node={
+              transition.toState === 'cancelled' ? nodes.ended : nodes.passed
+            }
           >
-            <p className="flex items-center gap-3 text-[14.5px] font-medium text-ink-2">
-              {stateLabels[transition.fromState]} →{' '}
-              {stateLabels[transition.toState]}
-              <span className="ml-auto font-mono text-[11px] text-ink-6">
-                {formatTimestamp(transition.occurredAt)}
-              </span>
-            </p>
-            <p className="mt-1.5 text-[13px] leading-[1.55] text-ink-3">
+            <BeatHead
+              at={transition.occurredAt}
+              title={`${stateLabels[transition.fromState]} → ${stateLabels[transition.toState]}`}
+            />
+            <p className={beatBodyClass}>
               {transition.actor === 'handler' ? 'You' : 'Handella'}
               {transition.reason === null ? '' : ` · ${transition.reason}`}
             </p>

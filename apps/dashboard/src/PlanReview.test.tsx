@@ -14,12 +14,19 @@ beforeEach(() => {
 
 const aJobInPlanReview = () => aJob({ state: 'planReview' })
 
+/**
+ * The plan is a tab on the job page now rather than a card always on it, so
+ * these land straight on it. A Handler reaching it by hand presses the state
+ * banner's "Review the plan", which navigates to this same URL.
+ */
+const planTabOf = (jobId: string) => `/jobs/${jobId}?tab=plan`
+
 describe('reviewing a plan', () => {
   it('shows the plan itself rather than only its revision number', async () => {
     const job = aJobInPlanReview()
     stubApi({ jobs: [job], planVersions: [aPlanVersion()] })
 
-    renderAt(`/jobs/${job.id}`)
+    renderAt(planTabOf(job.id))
 
     expect(
       await screen.findByText(
@@ -49,7 +56,7 @@ describe('reviewing a plan', () => {
       },
     })
 
-    renderAt(`/jobs/${job.id}`)
+    renderAt(planTabOf(job.id))
     await userEvent.click(
       await screen.findByRole('button', { name: 'Approve plan' }),
     )
@@ -65,7 +72,7 @@ describe('reviewing a plan', () => {
     const job = aJobInPlanReview()
     stubApi({ jobs: [job], planVersions: [aPlanVersion()] })
 
-    renderAt(`/jobs/${job.id}`)
+    renderAt(planTabOf(job.id))
 
     expect(
       await screen.findByRole('button', { name: 'Request changes' }),
@@ -88,7 +95,7 @@ describe('reviewing a plan', () => {
       },
     })
 
-    renderAt(`/jobs/${job.id}`)
+    renderAt(planTabOf(job.id))
     await userEvent.type(
       await screen.findByLabelText('Ask for changes'),
       'Cover the signup test too',
@@ -111,7 +118,7 @@ describe('reviewing a plan', () => {
       planVersions: [aPlanVersion({ approvalState: 'approved' })],
     })
 
-    renderAt(`/jobs/${job.id}`)
+    renderAt(planTabOf(job.id))
 
     expect(
       await screen.findByText(
@@ -137,7 +144,7 @@ describe('reviewing a plan', () => {
       ],
     })
 
-    renderAt(`/jobs/${job.id}`)
+    renderAt(planTabOf(job.id))
 
     expect(await screen.findByText('1 earlier revision')).toBeInTheDocument()
     expect(

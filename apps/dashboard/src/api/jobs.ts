@@ -16,8 +16,14 @@ import { messageOf, request, requestText } from './client.ts'
 
 export const jobKeys = {
   all: ['jobs'] as const,
-  attemptLog: (jobId: string, attemptId: string) =>
-    ['jobs', jobId, 'attempts', attemptId, 'log'] as const,
+  /**
+   * Outside the `jobs` prefix on purpose: every `job.changed` invalidates that
+   * prefix, and an open log is a quarter of a megabyte by default — the whole
+   * file once the Handler has asked for all of it. `staleTime` does not stop
+   * an invalidation refetching an active query; a different prefix does.
+   */
+  attemptLog: (jobId: string, attemptId: string, full: boolean) =>
+    ['attempt-logs', jobId, attemptId, full] as const,
   attempts: (jobId: string) => ['jobs', jobId, 'attempts'] as const,
   detail: (jobId: string) => ['jobs', jobId] as const,
   /**
@@ -78,11 +84,20 @@ export const fetchAttemptLog = async (
 export const createJob = async (body: CreateJob): Promise<Job> =>
   request('/api/jobs', { body, method: 'POST' })
 
+/**
+ * `expectedState` is the state the move was decided from. A row can be a poll
+ * behind the service, and a move legal from both the stale and the fresh
+ * state would otherwise apply to a job the Handler never saw.
+ */
 export const transitionJob = async (
   jobId: string,
   to: JobState,
+  expectedState: JobState,
 ): Promise<Job> =>
-  request(`/api/jobs/${jobId}/transitions`, { body: { to }, method: 'POST' })
+  request(`/api/jobs/${jobId}/transitions`, {
+    body: { expectedState, to },
+    method: 'POST',
+  })
 
 export const suspendJob = async (
   jobId: string,

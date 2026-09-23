@@ -69,6 +69,11 @@ export const stubApi = (routes: ApiRoutes = {}) => {
     }
     if (url.startsWith('/api/repositories/') && method === 'DELETE')
       return jsonResponse(null, 204)
+    // Editing one echoes the patch over the fixture, the way the service does.
+    if (url.startsWith('/api/repositories/') && method === 'PATCH')
+      return jsonResponse(
+        aRepository(JSON.parse(String(init?.body)) as Partial<Repository>),
+      )
 
     if (url === '/api/runbook-versions') {
       if (method === 'POST')

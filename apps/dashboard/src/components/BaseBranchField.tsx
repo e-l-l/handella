@@ -13,13 +13,23 @@ import { labelClass, monoFieldClass } from '../styles.ts'
  * The hint sits outside the label so the field's accessible name stays the one
  * word the Handler was given, rather than the sentence beneath it.
  */
+/**
+ * `labelHidden` keeps the name and drops the heading. Intake wraps this in a
+ * numbered step whose heading is already the word, so showing both put the
+ * same label on the screen twice — but the accessible name still has to name
+ * the issue it belongs to, because the panel renders one of these per selected
+ * issue and "Base branch" three times over is three fields a reader cannot tell
+ * apart.
+ */
 export function BaseBranchField({
   label = 'Base branch',
+  labelHidden = false,
   onChange,
   repositoryId,
   value,
 }: {
   label?: string
+  labelHidden?: boolean
   onChange: (value: string) => void
   repositoryId?: string
   value: string
@@ -35,7 +45,7 @@ export function BaseBranchField({
   return (
     <div className="flex min-w-[220px] flex-1 flex-col gap-2">
       <label className="flex flex-col gap-2">
-        <span className={labelClass}>{label}</span>
+        <span className={labelHidden ? 'sr-only' : labelClass}>{label}</span>
         <input
           className={monoFieldClass}
           list={listId}

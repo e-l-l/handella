@@ -47,10 +47,18 @@ export interface IntakeStateValue {
   readonly setSearchInput: (searchInput: string) => void
   readonly setStateId: (stateId: string) => void
   readonly setTeamId: (teamId: string) => void
-  /** The Selection, and the three things that can happen to it. */
+  /** The Selection, and the things that can happen to it. */
   readonly selections: Readonly<Record<string, IssueChoices>>
   readonly amend: (issueId: string, patch: Partial<IssueChoices>) => void
+  readonly clear: () => void
   readonly drop: (issueIds: readonly string[]) => void
+  /**
+   * Adds every issue named, leaving the choices of any already in the
+   * Selection alone. This is what a shift-click extends with: a range that
+   * already holds three picked issues should not un-pick them, and it should
+   * not reset the work class the Handler set on them either.
+   */
+  readonly select: (issueIds: readonly string[]) => void
   readonly toggle: (issueId: string) => void
 }
 

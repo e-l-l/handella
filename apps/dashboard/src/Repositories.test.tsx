@@ -12,6 +12,17 @@ beforeEach(() => {
   localStorage.clear()
 })
 
+/**
+ * The add form is behind a disclosure now rather than permanently open beneath
+ * the list: System is a settings screen, and a settings screen that is half an
+ * open form reads as a form. Every test that fills it in opens it first.
+ *
+ * While it is open the trigger reads "Cancel", so the only control named "Add
+ * repository" at any one moment is the one that submits.
+ */
+const openTheAddForm = async () =>
+  userEvent.click(await screen.findByRole('button', { name: 'Add repository' }))
+
 describe('repository settings', () => {
   it('lists the checkouts Handella can cut worktrees from', async () => {
     stubApi()
@@ -31,7 +42,7 @@ describe('repository settings', () => {
 
     expect(
       await screen.findByText(
-        'No repository yet, so nothing can be dispatched.',
+        /No repository yet, so nothing can be dispatched/,
       ),
     ).toBeInTheDocument()
   })
@@ -40,7 +51,8 @@ describe('repository settings', () => {
     stubApi({ repositories: [] })
 
     renderAt('/system')
-    await userEvent.type(await screen.findByLabelText('Name'), 'acme')
+    await openTheAddForm()
+    await userEvent.type(screen.getByLabelText('Name'), 'acme')
     await userEvent.type(screen.getByLabelText('Path'), '../acme')
 
     // Absolute because a worktree outlives the process that cut it, and a
@@ -57,7 +69,8 @@ describe('repository settings', () => {
     const fetchMock = stubApi({ repositories: [] })
 
     renderAt('/system')
-    await userEvent.type(await screen.findByLabelText('Name'), 'acme')
+    await openTheAddForm()
+    await userEvent.type(screen.getByLabelText('Name'), 'acme')
     await userEvent.type(screen.getByLabelText('Path'), '/Users/ell/acme')
     await userEvent.click(
       screen.getByRole('button', { name: 'Add repository' }),
@@ -79,11 +92,27 @@ describe('repository settings', () => {
     })
   })
 
-  it('removes one', async () => {
+  /**
+   * Removing one is destructive, so it asks first and the question names the
+   * consequence rather than asking whether the Handler is sure.
+   */
+  it('confirms before removing one, naming what is left alone', async () => {
     const fetchMock = stubApi()
 
     renderAt('/system')
     await userEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('The directory on disk')
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    ).toBe(false)
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Remove repository' }),
+    )
 
     await waitFor(() => {
       expect(
@@ -93,6 +122,51 @@ describe('repository settings', () => {
             (init as RequestInit | undefined)?.method === 'DELETE',
         ),
       ).toBe(true)
+    })
+  })
+
+  it('removes nothing when the Handler backs out of the confirmation', async () => {
+    const fetchMock = stubApi()
+
+    renderAt('/system')
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Keep it' }),
+    )
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(
+        ([, init]) => (init as RequestInit | undefined)?.method === 'DELETE',
+      ),
+    ).toBe(false)
+  })
+
+  /** The name, path and default base branch are all editable in place. */
+  it('edits one through the same three fields it was added with', async () => {
+    const fetchMock = stubApi()
+
+    renderAt('/system')
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    expect(screen.getByLabelText('Name')).toHaveValue('acme monorepo')
+
+    await userEvent.clear(screen.getByLabelText('Name'))
+    await userEvent.type(screen.getByLabelText('Name'), 'acme')
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+
+    await waitFor(() => {
+      const patched = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === `/api/repositories/${aRepository().id}` &&
+          (init as RequestInit | undefined)?.method === 'PATCH',
+      )
+      expect(
+        JSON.parse(String((patched?.[1] as RequestInit | undefined)?.body)),
+      ).toEqual({
+        name: 'acme',
+        path: '/Users/ell/workspace/work/monorepo',
+        defaultBaseBranch: 'dev',
+      })
     })
   })
 })
@@ -111,9 +185,8 @@ describe('choosing a path instead of typing one', () => {
     stubChooser('/Users/handler/workspace/acme')
 
     renderAt('/system')
-    await userEvent.click(
-      await screen.findByRole('button', { name: 'Choose…' }),
-    )
+    await openTheAddForm()
+    await userEvent.click(screen.getByRole('button', { name: 'Choose…' }))
 
     await waitFor(() =>
       expect(screen.getByLabelText('Path')).toHaveValue(
@@ -129,7 +202,8 @@ describe('choosing a path instead of typing one', () => {
     stubChooser('/Users/handler/workspace/acme')
 
     renderAt('/system')
-    await userEvent.type(await screen.findByLabelText('Name'), 'work monorepo')
+    await openTheAddForm()
+    await userEvent.type(screen.getByLabelText('Name'), 'work monorepo')
     await userEvent.click(screen.getByRole('button', { name: 'Choose…' }))
 
     await waitFor(() =>
@@ -144,7 +218,8 @@ describe('choosing a path instead of typing one', () => {
     stubChooser(null)
 
     renderAt('/system')
-    await userEvent.type(await screen.findByLabelText('Path'), '/tmp/typed')
+    await openTheAddForm()
+    await userEvent.type(screen.getByLabelText('Path'), '/tmp/typed')
     await userEvent.click(screen.getByRole('button', { name: 'Choose…' }))
 
     await waitFor(() =>

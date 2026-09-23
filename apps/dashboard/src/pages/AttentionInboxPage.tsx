@@ -1,125 +1,137 @@
 import type { AttentionItem, AttentionItemKind, Job } from '@handella/contracts'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router'
 
 import { attentionKeys, resolveAttentionItem } from '../api/attention.ts'
-import { Chip, Dot, type Tone } from '../components/Chip.tsx'
+import { openJobTerminal, resumeJob, useJobRefresh } from '../api/jobs.ts'
+import { fetchSystemStatus, statusKeys } from '../api/status.ts'
+import { Fact } from '../components/Fact.tsx'
+import { FilterPills } from '../components/FilterPills.tsx'
+import { JobActionButton } from '../components/JobControls.tsx'
+import { JobBeat } from '../components/JobBeat.tsx'
 import { SkeletonList } from '../components/Skeleton.tsx'
-import { WorkClassChip } from '../components/WorkClassChip.tsx'
-import { useAttempts, useMilestones } from '../hooks/useAttempts.ts'
+import { Slots } from '../components/Slots.tsx'
+import { Dot, Tag, type Tone } from '../components/Tag.tsx'
 import { useAttentionItems } from '../hooks/useAttentionItems.ts'
+import type { JobActionTarget } from '../hooks/useJobControls.ts'
 import { useJobs } from '../hooks/useJobs.ts'
-import { isQueued, isRunning, maxConcurrency, orderQueue } from '../jobViews.ts'
 import {
-  attemptLabel,
-  attentionKindLabels,
-  formatAge,
-  formatDuration,
-  issueKeyLabel,
-  stateLabels,
-  workClassLabels,
-} from '../labels.ts'
+  availableSlots,
+  isQueued,
+  isRunning,
+  maxConcurrency,
+} from '../jobViews.ts'
+import { capacityConsequence, formatAge, issueKeyLabel } from '../labels.ts'
 import {
   cardClass,
+  cardTitleClass,
   emptyPanelClass,
-  greyButtonClass,
-  insetClass,
+  countTagClass,
+  helperClass,
+  metaClass,
+  pageTitleClass,
   primaryButtonClass,
+  quietButtonClass,
   railGridClass,
   screenClass,
   secondaryButtonClass,
-  sectionTitleClass,
-  slotPanelClass,
-  softCardClass,
 } from '../styles.ts'
 
-/** What each kind of attention costs the Handler, in the handoff's palette. */
-const kindTones: Record<AttentionItemKind, Tone> = {
-  planApproval: 'amber',
-  blocker: 'red',
-  disputedReview: 'amber',
-  conflictProposal: 'red',
-  readyPr: 'mint',
-  failure: 'red',
-  // Neither is a Job that has stopped: one is residue on disk and the other
-  // is two Jobs that are both fine. Amber says look, not act.
-  orphanWorktree: 'amber',
-  overlapWarning: 'amber',
+/**
+ * How loud an Attention Item is allowed to be, which the handoff draws as the
+ * colour of a 4px rail down the left edge of its card.
+ *
+ * The handoff names two severities; Handella raises a third kind of thing.
+ * `orphanWorktree` and `overlapWarning` are neither a Job that has stopped nor
+ * a decision waiting on a signature — one is residue on disk that Handella
+ * will never delete, the other is two Jobs that are both fine — so they get
+ * amber, which in this palette means look rather than act.
+ */
+type Severity = 'blocker' | 'housekeeping' | 'review'
+
+const severities: Record<AttentionItemKind, Severity> = {
+  planApproval: 'review',
+  blocker: 'blocker',
+  disputedReview: 'review',
+  conflictProposal: 'blocker',
+  readyPr: 'review',
+  failure: 'blocker',
+  orphanWorktree: 'housekeeping',
+  overlapWarning: 'housekeeping',
+}
+
+/** The rail, the card's border tint, and the tone its status tag wears. */
+const severityStyles: Record<
+  Severity,
+  { border: string; rail: string; tone: Tone }
+> = {
+  blocker: { border: 'border-red/[0.26]', rail: 'bg-red', tone: 'red' },
+  housekeeping: {
+    border: 'border-amber/[0.24]',
+    rail: 'bg-amber',
+    tone: 'amber',
+  },
+  review: { border: 'border-mint/[0.22]', rail: 'bg-mint', tone: 'mint' },
 }
 
 /**
- * What the Handler goes to the job to do, and the constraint that holds while
- * they have not: the meta note is the promise Handella is keeping in the
- * meantime, so each one states a guardrail this system actually enforces
- * rather than reassuring in general.
+ * What each kind says in its status tag. Short rather than written to sit
+ * in a sentence: a tag is eight mono characters in a
+ * 5px rectangle, and "Ready pull request" does not fit in one.
  */
-const kindActions: Record<AttentionItemKind, { action: string; meta: string }> =
-  {
-    planApproval: {
-      action: 'Review the plan',
-      meta: 'the same Codex session resumes on approval',
-    },
-    blocker: {
-      action: 'Open the job',
-      meta: 'nothing moves until you answer',
-    },
-    disputedReview: {
-      action: 'Open the job',
-      meta: 'no reply is sent until you send it',
-    },
-    conflictProposal: {
-      action: 'Open the job',
-      meta: 'the original branch is not changed without your approval',
-    },
-    readyPr: {
-      action: 'Open the job',
-      meta: 'merging stays yours',
-    },
-    failure: {
-      action: 'Inspect the job',
-      meta: 'branch, worktree, session and logs are kept',
-    },
-    orphanWorktree: {
-      action: 'Look at the paths',
-      meta: 'Handella reports these and never deletes them',
-    },
-    overlapWarning: {
-      action: 'Open the job',
-      meta: 'both jobs still run; nothing is serialised',
-    },
-  }
+const kindTags: Record<AttentionItemKind, string> = {
+  planApproval: 'plan review',
+  blocker: 'blocked',
+  disputedReview: 'review disputed',
+  conflictProposal: 'conflict',
+  readyPr: 'pr ready',
+  failure: 'failed',
+  orphanWorktree: 'orphans',
+  overlapWarning: 'overlap',
+}
 
 /**
- * The filters the handoff draws, spelled as the kinds behind them: a Handler
- * triaging failures wants conflicts in the same pass, and one that is only
- * waiting on a signature wants approvals alone.
+ * The guardrail that holds while the Handler has not answered — the promise
+ * Handella is keeping in the meantime. Each one states something this system
+ * actually enforces rather than reassuring in general.
+ *
+ * Used as the card's explanation when the service did not write one, which is
+ * where the handoff puts "one sentence of plain-language explanation".
+ */
+const kindConsequences: Record<AttentionItemKind, string> = {
+  planApproval:
+    'Nothing is written to the branch until you approve the plan, and approving resumes the same Codex session.',
+  blocker: 'Nothing on this job moves until you answer it.',
+  disputedReview: 'No reply is sent to the pull request until you send it.',
+  conflictProposal: 'The original branch is not changed without your approval.',
+  readyPr: 'Handella never merges. Reviewing and merging stay with you.',
+  failure: 'The branch, worktree, session and logs are all kept.',
+  orphanWorktree:
+    'Handella reports these directories and never deletes them. Removing one is yours to do.',
+  overlapWarning:
+    'Both jobs still run: nothing is serialised and neither is delayed.',
+}
+
+/**
+ * The filters the handoff draws, spelled as the kinds behind them.
+ *
+ * Three in the drawing — All, Blockers, Reviews — and a fourth here for the
+ * two kinds Reconciliation raises, which are neither: a Handler triaging
+ * failures should not have orphaned directories in the same pass.
  *
  * Each carries an `id` that the label is free to change without: the chosen
  * filter outlives a reload, and display copy is not a storage key.
  */
 const filters = [
-  { id: 'all', kinds: null, label: 'All' },
-  { id: 'approvals', kinds: ['planApproval'], label: 'Approvals' },
-  {
-    id: 'failures',
-    kinds: ['failure', 'blocker', 'conflictProposal'],
-    label: 'Failures',
-  },
-  {
-    id: 'housekeeping',
-    kinds: ['orphanWorktree', 'overlapWarning'],
-    label: 'Housekeeping',
-  },
-  {
-    id: 'pull-requests',
-    kinds: ['disputedReview', 'readyPr'],
-    label: 'Pull requests',
-  },
+  { id: 'all', label: 'All', severity: null },
+  { id: 'blockers', label: 'Blockers', severity: 'blocker' },
+  { id: 'reviews', label: 'Reviews', severity: 'review' },
+  { id: 'housekeeping', label: 'Housekeeping', severity: 'housekeeping' },
 ] as const satisfies readonly {
   id: string
-  kinds: readonly AttentionItemKind[] | null
   label: string
+  severity: Severity | null
 }[]
 
 type FilterId = (typeof filters)[number]['id']
@@ -148,6 +160,22 @@ const rememberFilterId = (id: FilterId): void => {
   }
 }
 
+/** "waiting 3m", except in the first minute, where there is no number yet. */
+const waitedFor = (createdAt: string): string => {
+  const age = formatAge(createdAt)
+  return age === 'now' ? 'just now' : `waiting ${age}`
+}
+
+/**
+ * One card, with exactly one primary on it.
+ *
+ * This is the central fix on this screen: every card used to carry a mint
+ * "Open the job" and a bordered "Resolve" of near-equal weight, so nothing
+ * said which of the two the Handler was being asked to do. Now the primary is
+ * the thing that unsticks the job — and where that is a state change rather
+ * than a destination, it performs it here rather than sending the Handler to
+ * another screen to press the same button.
+ */
 function AttentionCard({
   item,
   job,
@@ -156,181 +184,176 @@ function AttentionCard({
   job: Job | undefined
 }) {
   const queryClient = useQueryClient()
+  const refreshJob = useJobRefresh()
+
   const resolve = useMutation({
     mutationFn: () => resolveAttentionItem(item.id),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: attentionKeys.all }),
   })
-  const { action, meta } = kindActions[item.kind]
+  // `useJobRefresh` covers both halves: resuming changes the job, and the item
+  // that reported it stopped is no longer true either.
+  const resume = useMutation({
+    mutationFn: (jobId: string) => resumeJob(jobId),
+    onSettled: refreshJob,
+  })
+
+  const severity = severities[item.kind]
+  const { border, rail, tone } = severityStyles[severity]
+  const jobPath = item.jobId === null ? null : `/jobs/${item.jobId}`
   const prUrl = job?.originalPrUrl ?? null
+  const failure = resume.error ?? resolve.error
+
+  /**
+   * The one primary. `null` for an item that has nowhere to go and nothing to
+   * change — the two Reconciliation raises against no Job at all — where the
+   * card is a report and the only control it needs is the quiet one.
+   */
+  const primary = ((): JobActionTarget | null => {
+    if (job !== undefined && job.suspension !== null)
+      return {
+        act: () => resume.mutate(job.id),
+        kind: 'resume',
+        label: resume.isPending ? 'Resuming…' : 'Resume job',
+      }
+    if (item.kind === 'readyPr' && prUrl !== null)
+      return { href: prUrl, kind: 'reviewPr', label: 'Review pull request' }
+    if (item.kind === 'planApproval' && jobPath !== null)
+      return {
+        kind: 'reviewPlan',
+        label: 'Review the plan',
+        to: `${jobPath}?tab=plan`,
+      }
+    if (jobPath !== null)
+      return { kind: 'open', label: 'Open the job', to: jobPath }
+    return null
+  })()
+
+  // Never offered twice: a primary that already opens the job makes the quiet
+  // duplicate of itself noise rather than a second way in.
+  const showOpenJob = jobPath !== null && primary !== null && !('to' in primary)
 
   return (
-    <li className={`flex flex-col gap-3 ${softCardClass}`}>
-      <div className="flex flex-wrap items-center gap-3">
-        <Chip
-          className="uppercase tracking-[0.05em]"
-          mono
-          tone={kindTones[item.kind]}
-        >
-          {attentionKindLabels[item.kind]}
-        </Chip>
-        <p className="text-[15.5px] font-[550] tracking-[-0.2px]">
-          {item.title}
-        </p>
-        <p className="ml-auto font-mono text-[12px] text-ink-5">
-          {issueKeyLabel(job)} <span className="text-ink-7">·</span>{' '}
-          {formatAge(item.createdAt)}
-        </p>
-      </div>
+    <li
+      className={`flex overflow-hidden rounded-2xl border bg-raised ${border}`}
+    >
+      <span aria-hidden="true" className={`w-1 flex-none ${rail}`} />
 
-      {item.body === null ? null : (
-        <p className="max-w-[700px] text-[13.5px] leading-[1.6] text-pretty text-ink-3">
-          {item.body}
-        </p>
-      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-3.5 px-5 py-[18px]">
+        <div className="flex flex-wrap items-center gap-[11px]">
+          <Tag tone={tone}>{kindTags[item.kind]}</Tag>
+          <h2 className="text-[16px] font-semibold tracking-[-0.2px] text-pretty">
+            {item.title}
+          </h2>
+          <p className="ml-auto whitespace-nowrap font-mono text-[11.5px] text-ink-5">
+            {issueKeyLabel(job)} <span className="text-ink-7">·</span>{' '}
+            {waitedFor(item.createdAt)}
+          </p>
+        </div>
 
-      <div className="flex flex-wrap items-center gap-[9px]">
-        {item.jobId === null ? null : (
-          <Link className={primaryButtonClass} to={`/jobs/${item.jobId}`}>
-            {action}
-          </Link>
+        {/* The service's own sentence where it wrote one, and the guardrail
+            this kind keeps underneath it — ranked by size rather than set side
+            by side, so there is one sentence to read first and one to read if
+            the first one worried you. A card with no body of its own promotes
+            the guardrail rather than printing it twice. */}
+        <p className="max-w-[720px] text-[13.5px] leading-[1.6] text-pretty text-ink-3">
+          {item.body ?? kindConsequences[item.kind]}
+        </p>
+        {item.body === null ? null : (
+          <p className="max-w-[720px] text-[12.5px] leading-[1.55] text-ink-4">
+            {kindConsequences[item.kind]}
+          </p>
         )}
-        {/* The only pull request action there will ever be: merging is the
-            Handler's, so the card links to it rather than offering it. */}
-        {prUrl === null ? null : (
-          <a
-            className={greyButtonClass}
-            href={prUrl}
-            rel="noreferrer"
-            target="_blank"
+
+        <div className="flex flex-wrap items-center gap-2">
+          {primary === null ? null : (
+            <JobActionButton
+              className={primaryButtonClass}
+              pending={resume.isPending}
+              target={primary}
+            />
+          )}
+
+          {showOpenJob && jobPath !== null ? (
+            <Link className={quietButtonClass} to={jobPath}>
+              Open job
+            </Link>
+          ) : null}
+
+          {/* Always quiet, on every card. CONTEXT.md has an Attention Item
+              resolved rather than deleted, so this is the word rather than the
+              handoff's "Dismiss" — and resolving one is reversible in the
+              sense the Quiet class is for: whatever raised it raises it again. */}
+          <button
+            className={quietButtonClass}
+            disabled={resolve.isPending}
+            onClick={() => resolve.mutate()}
+            type="button"
           >
-            Open PR
-          </a>
+            {resolve.isPending ? 'Resolving…' : 'Resolve'}
+          </button>
+        </div>
+
+        {failure === null || failure === undefined ? null : (
+          <p className="text-[12.5px] text-red-ink" role="alert">
+            {failure.message}
+          </p>
         )}
-        <button
-          className={secondaryButtonClass}
-          disabled={resolve.isPending}
-          onClick={() => resolve.mutate()}
-          type="button"
-        >
-          Resolve
-        </button>
-        <p className="ml-auto font-mono text-[12.5px] text-ink-5">{meta}</p>
       </div>
     </li>
   )
 }
 
 /**
- * What a running job is doing, read from its own milestones.
- *
- * Only an implementing job has any: planning produces no spine, and a job that
- * has just been given a slot has not written its first line yet.
+ * One in-flight job: the live dot, what it is, and the one secondary that puts
+ * the Handler inside it. The whole row opens the job — a row that only opens
+ * from its title is a target the width of a sentence — so the link is an
+ * overlay rather than a wrapper, which is what lets the button beside it take
+ * its own clicks.
  */
-function LatestBeat({ job }: { job: Job }) {
-  const implementing = job.state === 'implementing'
-  const attempts = useAttempts(job.id, implementing)
-  const milestones = useMilestones(job.id, implementing)
-
-  if (!implementing) return null
-
-  const attempt = attempts.data?.at(-1)
-  const latest = milestones.data?.at(-1)
-  if (attempt === undefined) return null
+function RunningRow({ job }: { job: Job }) {
+  const terminal = useMutation({ mutationFn: () => openJobTerminal(job.id) })
 
   return (
-    <>
-      <span className="font-mono text-[11px] text-ink-5">
-        {attemptLabel(attempt)} ·{' '}
-        {formatDuration(attempt.startedAt, attempt.endedAt)}
-      </span>
-      {/* The line the agent just wrote, which is what actually tells the
-          Handler whether to step in. Still no bar: milestones have no total,
-          so a bar would be inventing the denominator. */}
-      {latest === undefined ? null : (
-        <span className="truncate font-mono text-[11.5px] text-ink-3">
-          {latest.summary}
-          {latest.exitCode === null ? '' : ` · exit ${latest.exitCode}`}
-        </span>
-      )}
-    </>
-  )
-}
-
-/** One running job: what it is doing now, and for how long it has been doing it. */
-function RunningSlot({ job }: { job: Job }) {
-  return (
-    <li>
-      {/* The whole slot opens the job, because a slot that only opens from its
-          title is a target the width of a sentence. */}
+    <li className="relative flex flex-col gap-3 rounded-2xl border border-line bg-raised px-[18px] py-4 hover:bg-raised-hover">
       <Link
-        className={`flex flex-col gap-[9px] hover:bg-surface-hover ${insetClass}`}
+        aria-label={`Open ${issueKeyLabel(job)}: ${job.title}`}
+        className="absolute inset-0 rounded-[inherit]"
         to={`/jobs/${job.id}`}
-      >
-        <span className="flex items-center gap-2.5">
-          <Dot tone="mint" />
-          <span className="min-w-0 flex-1 truncate text-[13.5px] font-[550]">
-            {job.title}
-          </span>
-          <span className="flex-none whitespace-nowrap font-mono text-[11.5px] text-ink-5">
-            {issueKeyLabel(job)}
-          </span>
-        </span>
-        <span className="text-[12.5px] text-ink-3">
-          {stateLabels[job.state]} · base {job.baseBranch}
-        </span>
-        <LatestBeat job={job} />
-        <span className="flex justify-between font-mono text-[11px] text-ink-5">
-          <span>{workClassLabels[job.workClass]}</span>
-          <span>{formatAge(job.updatedAt)}</span>
-        </span>
-      </Link>
-    </li>
-  )
-}
+      />
 
-function QueueRow({ job, position }: { job: Job; position: number }) {
-  return (
-    <li>
-      <Link
-        className="flex items-center gap-3 rounded-[14px] bg-surface px-3.5 py-3 hover:bg-surface-hover"
-        to={`/jobs/${job.id}`}
-      >
-        <span className="w-3.5 flex-none font-mono text-[11.5px] text-ink-5">
-          {position}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium">
-            {job.title}
-          </span>
-          <span className="mt-0.5 block font-mono text-[11px] text-ink-5">
-            {issueKeyLabel(job)} · {stateLabels[job.state]}
-          </span>
-        </span>
-        <WorkClassChip workClass={job.workClass} />
-      </Link>
-    </li>
-  )
-}
-
-/** A rail panel: what it lists, and one line saying how much of it there is. */
-function RailPanel({
-  children,
-  note,
-  title,
-}: {
-  children: ReactNode
-  note: string
-  title: string
-}) {
-  return (
-    <section className={cardClass}>
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold">{title}</h2>
-        <p className="font-mono text-[11.5px] text-ink-5">{note}</p>
+      <div className="flex flex-wrap items-center gap-[11px]">
+        <Dot tone="mint" />
+        <p className="min-w-0 flex-1 truncate text-[14.5px] font-[550]">
+          {job.title}
+        </p>
+        <p className="whitespace-nowrap font-mono text-[11.5px] text-ink-5">
+          {issueKeyLabel(job)}
+        </p>
+        {/* Labelled by what it will actually do: a job that has not planned
+            yet has no session to resume, and the window is then only a shell. */}
+        <button
+          className={`relative z-10 ${quietButtonClass}`}
+          disabled={terminal.isPending || job.worktreePath === null}
+          onClick={() => terminal.mutate()}
+          type="button"
+        >
+          {terminal.isPending
+            ? 'Opening…'
+            : job.codexSessionId === null
+              ? 'Open terminal'
+              : 'Open session'}
+        </button>
       </div>
-      {children}
-    </section>
+
+      <JobBeat job={job} />
+
+      {terminal.error === null ? null : (
+        <p className="text-[12px] text-red-ink" role="alert">
+          {terminal.error.message}
+        </p>
+      )}
+    </li>
   )
 }
 
@@ -338,77 +361,93 @@ export function AttentionInboxPage() {
   const [filterId, setFilterId] = useState(storedFilterId)
   const attention = useAttentionItems()
   const jobs = useJobs()
+  const status = useQuery({
+    queryKey: statusKeys.current,
+    queryFn: fetchSystemStatus,
+  })
 
-  const items = attention.data ?? []
-  // Widened back from the `as const` tuples, which have no element type in
-  // common and would narrow `includes` to `never`.
-  const kinds: readonly AttentionItemKind[] | null =
-    filters.find((one) => one.id === filterId)?.kinds ?? null
+  // Memoised because the filter pills count over it: `?? []` is a fresh array
+  // every render, and a fresh array is a changed dependency.
+  const items = useMemo(() => attention.data ?? [], [attention.data])
+  const severity = filters.find((one) => one.id === filterId)?.severity ?? null
   const shown =
-    kinds === null ? items : items.filter((item) => kinds.includes(item.kind))
+    severity === null
+      ? items
+      : items.filter((item) => severities[item.kind] === severity)
 
   const choose = (id: FilterId) => {
     setFilterId(id)
     rememberFilterId(id)
   }
 
-  // The rail is five passes and a sort over every job, and the event stream
-  // invalidates jobs and attention separately: without this it is redone on
-  // every attention change and on every filter click, neither of which moves a
-  // job.
-  const { byId, freeSlots, queued, running } = useMemo(() => {
+  const options = useMemo(
+    () =>
+      filters.map((one) => ({
+        count:
+          one.severity === null
+            ? items.length
+            : items.filter((item) => severities[item.kind] === one.severity)
+                .length,
+        id: one.id,
+        label: one.label,
+      })),
+    [items],
+  )
+
+  // The rail and the in-flight list are four passes over every job, and the
+  // event stream invalidates jobs and attention separately: without this they
+  // are redone on every attention change and on every filter click, neither of
+  // which moves a job.
+  const { byId, freeSlots, queued, running, suspended } = useMemo(() => {
     const allJobs = jobs.data ?? []
-    const active = allJobs.filter(isRunning)
     return {
       byId: new Map(allJobs.map((job) => [job.id, job])),
-      freeSlots: Math.max(0, maxConcurrency - active.length),
-      queued: orderQueue(allJobs.filter(isQueued)),
-      running: active,
+      freeSlots: availableSlots(allJobs),
+      queued: allJobs.filter(isQueued).length,
+      running: allJobs.filter(isRunning),
+      suspended: allJobs.filter((job) => job.suspension !== null).length,
     }
   }, [jobs.data])
 
   return (
     <div className={`${railGridClass} ${screenClass}`}>
-      <section className="flex flex-col">
-        <div className="mb-4 flex flex-wrap items-center gap-3.5">
-          <h1 className={sectionTitleClass}>Needs you</h1>
-          <span className="rounded-full bg-mint px-2.5 py-[3px] font-mono text-[12px] font-semibold text-deep">
-            {items.length}
-          </span>
-          <div className="ml-auto flex flex-wrap gap-[7px]">
-            {filters.map((one) => (
-              <button
-                className={`rounded-full px-3.5 py-[7px] text-[12.5px] ${
-                  one.id === filterId
-                    ? 'bg-raised-alt text-ink'
-                    : 'border border-line-strong text-ink-4 hover:text-ink-2'
-                }`}
-                key={one.id}
-                onClick={() => choose(one.id)}
-                type="button"
-              >
-                {one.label}
-              </button>
-            ))}
+      <section className="flex min-w-0 flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className={pageTitleClass}>Needs you</h1>
+          <span className={countTagClass}>{items.length}</span>
+          <p className="text-[13px] text-ink-4">
+            Nothing else moves until these are answered.
+          </p>
+          <div className="ml-auto">
+            <FilterPills
+              label="Filter what needs you"
+              onChoose={choose}
+              options={options}
+              value={filterId}
+            />
           </div>
         </div>
 
         {attention.isPending ? (
           <SkeletonList
-            className="h-[118px] rounded-[20px]"
-            count={3}
-            label="Loading the attention inbox"
-            wrapperClassName="flex flex-col gap-3"
+            className="h-[132px] rounded-2xl"
+            count={2}
+            label="Loading what needs you"
+            wrapperClassName="flex flex-col gap-4"
           />
         ) : items.length === 0 ? (
-          <p className={emptyPanelClass}>Nothing is waiting on you.</p>
+          <p className={emptyPanelClass}>
+            Nothing is waiting on you. Dispatched jobs appear under In flight as
+            they start.
+          </p>
         ) : shown.length === 0 ? (
           <p className={emptyPanelClass}>
             Nothing under this filter. {items.length} item
-            {items.length === 1 ? '' : 's'} waiting elsewhere.
+            {items.length === 1 ? '' : 's'} waiting elsewhere — switch to All to
+            see them.
           </p>
         ) : (
-          <ul className="flex flex-col gap-3">
+          <ul className="flex flex-col gap-4">
             {shown.map((item) => (
               <AttentionCard
                 item={item}
@@ -418,36 +457,82 @@ export function AttentionInboxPage() {
             ))}
           </ul>
         )}
-      </section>
 
-      <aside className="flex flex-col gap-[18px]">
-        <RailPanel
-          note={`${running.length} of ${maxConcurrency} slots`}
-          title="Running"
-        >
+        <div className="mt-1.5 flex flex-wrap items-center gap-3">
+          <h2 className="text-[15px] font-semibold">In flight</h2>
+          <p className={metaClass}>
+            {running.length} running <span className="text-ink-7">·</span>{' '}
+            {queued} queued
+          </p>
+          <Link className={`ml-auto ${quietButtonClass}`} to="/jobs">
+            All jobs →
+          </Link>
+        </div>
+
+        {running.length === 0 ? (
+          <p className={emptyPanelClass}>
+            Nothing is running. {freeSlots === maxConcurrency ? 'Every' : 'A'}{' '}
+            slot is free, so the next job you dispatch starts planning straight
+            away.
+          </p>
+        ) : (
           <ul className="flex flex-col gap-2.5">
             {running.map((job) => (
-              <RunningSlot job={job} key={job.id} />
-            ))}
-            {Array.from({ length: freeSlots }, (_, offset) => (
-              <li className={slotPanelClass} key={`free-${offset}`}>
-                Slot {running.length + offset + 1} free
-              </li>
+              <RunningRow job={job} key={job.id} />
             ))}
           </ul>
-        </RailPanel>
+        )}
+      </section>
 
-        <RailPanel note={`${queued.length} waiting for a slot`} title="Queue">
-          {queued.length === 0 ? (
-            <p className={slotPanelClass}>Nothing is queued.</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {queued.map((job, index) => (
-                <QueueRow job={job} key={job.id} position={index + 1} />
-              ))}
-            </ul>
-          )}
-        </RailPanel>
+      <aside className="flex flex-col gap-4">
+        <section className={`${cardClass} flex flex-col gap-3.5`}>
+          <div className="flex items-center justify-between">
+            <h2 className={cardTitleClass}>Capacity</h2>
+            <p className={metaClass}>
+              {running.length} / {maxConcurrency}
+            </p>
+          </div>
+          <Slots used={running.length} variant="card" />
+          {/* The consequence rather than the count, which the numbers above
+              have already given: what a free slot means is whether the next
+              dispatch starts or waits. */}
+          <p className={helperClass}>{capacityConsequence(freeSlots)}</p>
+          <Link className={`w-full ${secondaryButtonClass}`} to="/intake">
+            Pick issues to dispatch
+          </Link>
+        </section>
+
+        <section className={`${cardClass} flex flex-col gap-3`}>
+          <h2 className={cardTitleClass}>Right now</h2>
+          {/* Counts this screen can actually answer from `/api/jobs`. The
+              handoff asks for "Dispatched today" and "Pull requests opened
+              today", and neither is derivable: a Job carries no dispatch
+              timestamp, and how many opened today is in the transition history,
+              which is one request per job. */}
+          <dl aria-label="Right now" className="flex flex-col gap-3">
+            <Fact label="Running" mono value={String(running.length)} />
+            <Fact label="Queued" mono value={String(queued)} />
+            <Fact
+              label="Suspended"
+              mono
+              tone={suspended === 0 ? 'text-ink-2' : 'text-amber-ink'}
+              value={String(suspended)}
+            />
+            <span aria-hidden="true" className="h-px bg-line" />
+            <Fact
+              label="Service"
+              mono
+              tone={status.isError ? 'text-red-ink' : 'text-mint-soft'}
+              value={
+                status.isError
+                  ? 'unreachable'
+                  : status.data === undefined
+                    ? 'checking…'
+                    : 'connected · 127.0.0.1'
+              }
+            />
+          </dl>
+        </section>
       </aside>
     </div>
   )

@@ -8,6 +8,12 @@ import {
   type IssueChoices,
 } from './intake.ts'
 
+/** What an issue starts with the moment it is selected, however it was. */
+const defaultChoice: IssueChoices = {
+  baseBranch: defaultBaseBranch,
+  workClass: 'routine',
+}
+
 /**
  * Holds the Intake screen's own state above the router, so leaving Intake no
  * longer throws it away. Two things were being lost: the Selection, which is
@@ -46,6 +52,22 @@ export function IntakeStateProvider({ children }: { children: ReactNode }) {
           return { ...current, [issueId]: { ...existing, ...patch } }
         }),
 
+      clear: () => setSelections({}),
+
+      select: (issueIds: readonly string[]) =>
+        setSelections((current) => {
+          const added = Object.fromEntries(
+            issueIds
+              .filter((issueId) => !(issueId in current))
+              .map((issueId) => [issueId, defaultChoice]),
+          )
+          // Returned unchanged when the range held nothing new, so extending
+          // over an already-selected block is not a re-render.
+          return Object.keys(added).length === 0
+            ? current
+            : { ...current, ...added }
+        }),
+
       // Takes the issues rather than the survivors, because the caller knows
       // which jobs it created and not which selections it left behind.
       drop: (issueIds: readonly string[]) =>
@@ -66,7 +88,7 @@ export function IntakeStateProvider({ children }: { children: ReactNode }) {
           }
           return {
             ...current,
-            [issueId]: { baseBranch: defaultBaseBranch, workClass: 'routine' },
+            [issueId]: defaultChoice,
           }
         }),
     }),

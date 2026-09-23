@@ -3,7 +3,6 @@ import { maxImplementationAttempts } from '@handella/contracts'
 import type {
   Attempt,
   AttemptOutcome,
-  AttentionItemKind,
   Job,
   JobSource,
   JobState,
@@ -39,11 +38,34 @@ export const issueKeyLabel = (
   job: Pick<Job, 'linearIssueKey'> | undefined,
 ): string => job?.linearIssueKey ?? 'ad hoc'
 
-/** A job is suspended or it is not; the state says nothing about that. */
-export const suspensionLabels: Record<JobSuspension, string> = {
-  stoppedByHandler: 'Suspended — you stopped this job',
-  stoppedBySystem: 'Suspended — Handella stopped this job',
-  interrupted: 'Suspended — interrupted by a restart',
+/**
+ * The heading the job page's state banner carries. A job is suspended or it
+ * is not, and the state says nothing about that, so the word "Suspended" is
+ * spent on the tag beside it instead. The handoff writes "Paused — interrupted by a restart"; CONTEXT.md
+ * rules out "pause" as a name for this concept, so the banner says what
+ * happened rather than renaming the state.
+ */
+export const suspensionHeadings: Record<JobSuspension, string> = {
+  stoppedByHandler: 'Stopped — you suspended this job',
+  stoppedBySystem: 'Stopped — Handella suspended this job',
+  interrupted: 'Stopped — interrupted by a restart',
+}
+
+/**
+ * What is being held while a job is suspended, and what resuming will do.
+ *
+ * The handoff's rule for every blocked state: say the consequence, not the
+ * condition. A Handler reading "interrupted" wants to know whether the branch
+ * survived, and all three of these say so, because in all three cases it did —
+ * a Suspension keeps the Worktree rather than working in it.
+ */
+export const suspensionConsequences: Record<JobSuspension, string> = {
+  stoppedByHandler:
+    'You stopped this job. The worktree and branch are kept as they were, and resuming continues from the last milestone.',
+  stoppedBySystem:
+    'Handella stopped this job. The worktree and branch are kept as they were; the timeline says what happened before it stopped.',
+  interrupted:
+    'A restart interrupted this job. The worktree and branch are intact, and resuming reopens the same Codex session where it left off.',
 }
 
 export const workClassLabels: Record<WorkClass, string> = {
@@ -74,17 +96,6 @@ export const linearPriorityLabels: Record<LinearPriority, string> = {
   4: 'Low',
 }
 
-export const attentionKindLabels: Record<AttentionItemKind, string> = {
-  planApproval: 'Plan approval',
-  blocker: 'Blocker',
-  disputedReview: 'Disputed review',
-  conflictProposal: 'Conflict proposal',
-  readyPr: 'Ready pull request',
-  failure: 'Failure',
-  orphanWorktree: 'Orphaned worktrees',
-  overlapWarning: 'Overlapping work',
-}
-
 export const databaseStatusLabels: Record<
   StatusResponse['database']['status'],
   string
@@ -105,7 +116,47 @@ const timestampFormat = new Intl.DateTimeFormat(undefined, {
 export const formatTimestamp = (value: string): string =>
   timestampFormat.format(new Date(value))
 
-export const attemptOutcomeLabels: Record<AttemptOutcome, string> = {
+/**
+ * The time alone, for the job page's timeline, where the handoff right-aligns
+ * `13:02` beside each entry. A spine read top to bottom does not need the date
+ * on every line — the entries are minutes apart — and a full timestamp there
+ * reads as data rather than as the sequence it is.
+ */
+const clockFormat = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' })
+
+export const formatClock = (value: string): string =>
+  clockFormat.format(new Date(value))
+
+/**
+ * How long the local service has been up, in the health strip's compact
+ * spelling. Seconds are only shown while there is nothing longer to say: "up
+ * 4h" is the fact, and "4h 12m 8s" is a stopwatch nobody asked for.
+ */
+export const formatUptime = (value: number): string => {
+  // `Math.max(0, NaN)` is NaN, so a missing number is caught before it.
+  const seconds = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}
+
+/**
+ * A path shown at the width a meta row has for it, elided from the left: the
+ * end of a worktree path is the part that identifies it, and the hundred and
+ * forty characters in front of it are the same for every job on the machine.
+ * `CopyButton` is what puts the whole thing back.
+ */
+export const elidePath = (path: string, width = 34): string => {
+  if (path.length <= width) return path
+  // The ellipsis is one of the characters, so the result is `width` long.
+  const keep = Math.max(1, width - 1)
+  return `…${path.slice(-keep)}`
+}
+
+const attemptOutcomeLabels: Record<AttemptOutcome, string> = {
   reportedDone: 'reported done',
   reportedBlocked: 'plan was wrong',
   failed: 'failed',
@@ -113,6 +164,10 @@ export const attemptOutcomeLabels: Record<AttemptOutcome, string> = {
   stopped: 'stopped',
   interrupted: 'interrupted',
 }
+
+/** How a turn ended, or that it has not yet. */
+export const attemptOutcomeLabel = (attempt: Attempt): string =>
+  attempt.outcome === null ? 'running' : attemptOutcomeLabels[attempt.outcome]
 
 /**
  * Which turn this is, and its round once a Handler resume has started another.
@@ -166,4 +221,27 @@ export const formatAge = (value: string, now: number = Date.now()): string => {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}h`
   return `${Math.floor(hours / 24)}d`
+}
+
+/**
+ * `formatAge` in a sentence: "3m ago", or "just now" inside the first minute,
+ * where "now ago" would not read.
+ */
+export const formatAgo = (value: string, now: number = Date.now()): string => {
+  const age = formatAge(value, now)
+  return age === 'now' ? 'just now' : `${age} ago`
+}
+
+/**
+ * What a free Slot means for the next Job, which is the only reason the
+ * Handler is reading the count: a dispatch either starts now or waits. Home's
+ * Capacity card says this underneath the segments, because the segments have
+ * already given the number.
+ */
+export const capacityConsequence = (free: number): string => {
+  if (free === 0)
+    return 'Every slot is busy. The next job you dispatch waits in the queue until one frees up.'
+  if (free === 1)
+    return 'One slot is free. The next job you dispatch starts immediately instead of queueing.'
+  return `${free} slots free. The next job you dispatch starts immediately instead of queueing.`
 }

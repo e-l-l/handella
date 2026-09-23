@@ -1,5 +1,6 @@
-import { NavLink, Route, Routes } from 'react-router'
+import { Link, NavLink, Route, Routes } from 'react-router'
 
+import { Slots } from './components/Slots.tsx'
 import { useAttentionItems } from './hooks/useAttentionItems.ts'
 import { useEventStream } from './hooks/useEventStream.ts'
 import { useJobs } from './hooks/useJobs.ts'
@@ -10,6 +11,7 @@ import { JobDetailPage } from './pages/JobDetailPage.tsx'
 import { JobsPage } from './pages/JobsPage.tsx'
 import { NotFoundPage } from './pages/NotFoundPage.tsx'
 import { SystemStatusPage } from './pages/SystemStatusPage.tsx'
+import { navPillClass, pillGroupClass, primaryButtonClass } from './styles.ts'
 
 /**
  * `attention` marks the one entry that carries the count of what is waiting:
@@ -27,7 +29,7 @@ function BrandMark() {
   return (
     <span
       aria-hidden="true"
-      className="grid size-7 place-items-center rounded-[10px] bg-mint font-mono text-[13px] font-bold text-deep"
+      className="grid size-[26px] place-items-center rounded-lg bg-mint font-mono text-[12.5px] font-bold text-on-mint"
     >
       H
     </span>
@@ -36,8 +38,13 @@ function BrandMark() {
 
 /**
  * How much is waiting, carried on the nav so it is visible from a screen that
- * is not the inbox. Nothing waiting draws nothing: a zero is a number the
- * Handler would have to read before ignoring.
+ * is not Home. Nothing waiting draws nothing: a zero is a number the Handler
+ * would have to read before ignoring.
+ *
+ * Kept from before the revamp, which does not draw it. The handoff's own Home
+ * screen puts this count next to the page title in a mint rectangle, and a
+ * count that only exists on the screen it describes cannot do the job of
+ * bringing the Handler back to it.
  */
 function AttentionBadge() {
   const attention = useAttentionItems()
@@ -47,7 +54,7 @@ function AttentionBadge() {
   return (
     <span
       aria-label={`${waiting} waiting on you`}
-      className="rounded-full bg-mint px-[7px] py-px font-mono text-[11px] font-semibold text-deep"
+      className="rounded-[5px] bg-mint px-[6px] py-px font-mono text-[10.5px] font-semibold text-on-mint"
     >
       {waiting}
     </span>
@@ -55,10 +62,12 @@ function AttentionBadge() {
 }
 
 /**
- * The ambient read the handoff asks the nav to carry: how much of the machine
- * is busy, visible from every screen without opening one.
+ * The handoff's capacity readout, which replaces a bare `0/3 running` pill that
+ * looked pressable. Labelled, squared off at 8px and sitting on the card value
+ * rather than in a pill: an ambient number is a fact, and facts in this design
+ * are not pill-shaped.
  */
-function ConcurrencyChip() {
+function CapacityReadout() {
   const jobs = useJobs()
   // A shell that has not heard from the service yet says nothing rather than
   // claiming nothing is running.
@@ -67,17 +76,10 @@ function ConcurrencyChip() {
   const running = jobs.data.filter(isRunning).length
 
   return (
-    <span className="inline-flex items-center gap-2 rounded-full bg-raised px-3.5 py-[7px]">
-      <span aria-hidden="true" className="flex items-center gap-1">
-        {Array.from({ length: maxConcurrency }, (_, slot) => (
-          <span
-            className={`size-[7px] rounded-full ${slot < running ? 'bg-mint' : 'bg-secondary'}`}
-            key={slot}
-          />
-        ))}
-      </span>
-      <span className="font-mono text-[12.5px] text-ink-4">
-        {running}/{maxConcurrency} running
+    <span className="inline-flex items-center gap-2 rounded-lg bg-raised px-3 py-1.5">
+      <Slots used={running} variant="nav" />
+      <span className="whitespace-nowrap font-mono text-[11.5px] text-ink-3">
+        {running} of {maxConcurrency} slots busy
       </span>
     </span>
   )
@@ -86,32 +88,29 @@ function ConcurrencyChip() {
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-svh bg-surface text-ink">
-      {/* The handoff draws this band at a fixed 70px for 1440px. Below the
+      {/* The handoff draws this band at a fixed 64px for 1440px. Below the
           1200px the rails collapse at, the same row wraps rather than pushing
-          the concurrency chip off the edge: the nav is kept, not shortened.
+          the capacity readout off the edge: the nav is kept, not shortened.
 
           Pinned, and opaque so what scrolls under it does not show through: a
           rail that sticks below it (Intake's) needs the band's height to be
-          the same 70px whether the page is scrolled or not. */}
-      <header className="sticky top-0 z-20 flex min-h-[70px] flex-wrap items-center gap-x-[26px] gap-y-3 border-b border-line bg-surface px-7 py-3 min-[1200px]:h-[70px] min-[1200px]:flex-nowrap min-[1200px]:py-0">
-        <div className="flex items-center gap-[11px]">
+          the same 64px whether the page is scrolled or not. */}
+      <header className="sticky top-0 z-20 flex min-h-16 flex-wrap items-center gap-x-6 gap-y-3 border-b border-line-nav bg-chrome px-6 py-3 min-[1200px]:h-16 min-[1200px]:flex-nowrap min-[1200px]:py-0">
+        <div className="flex items-center gap-2.5">
           <BrandMark />
           <p className="text-[15px] font-semibold tracking-[-0.2px]">
             handella
           </p>
         </div>
 
-        <nav
-          aria-label="Primary navigation"
-          className="flex items-center gap-[3px] rounded-full bg-raised p-1"
-        >
+        <nav aria-label="Primary navigation" className={pillGroupClass}>
           {navigation.map((item) => (
             <NavLink
               className={({ isActive }) =>
-                `flex items-center gap-1.5 rounded-full px-3 py-2 text-[13.5px] min-[1200px]:px-4 ${
+                `${navPillClass} ${
                   isActive
-                    ? 'bg-mint/16 font-medium text-mint-soft'
-                    : 'text-ink-4 hover:text-ink-2'
+                    ? 'bg-mint/[0.18] font-medium text-mint-soft'
+                    : 'text-ink-3 hover:text-ink'
                 }`
               }
               end={item.to === '/'}
@@ -124,9 +123,15 @@ function AppShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
 
-        <div className="ml-auto flex items-center gap-3">
-          <ConcurrencyChip />
-        </div>
+        <CapacityReadout />
+
+        {/* The global primary, so starting work is reachable from every screen.
+            It is the one mint button a screen is allowed on top of its own:
+            every other screen's primary is about the thing already in front of
+            the Handler, and this one is about the next thing. */}
+        <Link className={`ml-auto ${primaryButtonClass}`} to="/intake">
+          New job
+        </Link>
       </header>
       <main>{children}</main>
     </div>

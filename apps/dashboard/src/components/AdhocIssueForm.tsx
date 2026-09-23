@@ -201,7 +201,7 @@ export function AdhocIssueForm({
 
       <div className="flex flex-wrap items-center gap-2.5">
         <button
-          className={`${primaryButtonClass} disabled:opacity-50`}
+          className={primaryButtonClass}
           disabled={cannotSubmit}
           type="submit"
         >

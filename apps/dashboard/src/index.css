@@ -7,30 +7,54 @@
  * surface by design rather than by preference, so there is no light scheme to
  * switch to: the palette carries meaning (mint acts, amber waits, red failed)
  * and a second set of hues would be a second set of meanings.
+ *
+ * The UX revamp handoff makes shape carry function on top of that — a pill is
+ * pressable, a 5px rectangle is a fact — so the geometry lives beside the
+ * palette in `styles.ts` rather than being decided per screen.
  */
 :root {
   color-scheme: dark;
 
-  /* Surfaces, from the page up to the rows that sit on cards. */
+  /* Surfaces, from the nav band down to the rows that sit on cards. */
+  --chrome: #10140f;
   --surface: #131714;
   --raised: #1a211d;
-  --raised-alt: #212a25;
+  --raised-muted: #161b18;
   --deep: #0f1311;
+
+  /**
+   * The three control fills, which are three different statements: `control`
+   * is a secondary button, `control-alt` is the background of a fact, and
+   * `secondary` is the selected half of a segmented control.
+   */
+  --control: #242e28;
+  --control-alt: #26322b;
   --secondary: #2a3b30;
 
-  /* The hover values the handoff derives, one per surface a row can sit on. */
+  /* The hover values the handoff derives: rows lighten, they do not move. */
   --raised-hover: #1f2722;
+  --raised-muted-hover: #1a201c;
   --surface-hover: #171d19;
 
   /* Mint is the only colour that acts; soft mint only ever speaks. */
   --mint: #6ee7b7;
-  --mint-hover: #8bedc6;
+  --mint-hover: #8cf0c6;
   --mint-active: #5ad3a3;
   --mint-soft: #a7f3d0;
 
+  /* Mint dimmed to the weight a finished row reads at, and never brighter. */
+  --mint-dim: #8fbfa6;
+
+  /**
+   * Ink on a mint fill. Darker than `--deep` on purpose: a primary button is
+   * the highest-contrast thing on the screen, and the handoff sets its text
+   * one step below the darkest surface so the fill is what carries the eye.
+   */
+  --on-mint: #08120d;
+
   /* Six inks, brightest first. Ink 6 is decorative: it fails 4.5:1 on body. */
   --ink: #e8f0ea;
-  --ink-2: #c8d6cd;
+  --ink-2: #d6e3da;
   --ink-3: #9bada2;
   --ink-4: #8fa096;
   --ink-5: #7b8c82;
@@ -39,39 +63,52 @@
   /* Ink 7 is the separator dot alone: never text, at any size. */
   --ink-7: #3e4a43;
 
-  /* Waiting and failing. The bright value marks, the -ink value is readable. */
+  /**
+   * Waiting and failing. The bright value marks, the -ink value is readable,
+   * and the two extra ambers belong to the one place a warning is the loudest
+   * thing on the screen: the job page's state banner.
+   */
   --amber: #f5c767;
-  --amber-ink: #e3c88c;
-  --red: #ef7e7e;
-  --red-ink: #f0a0a0;
+  --amber-ink: #e8c98a;
+  --amber-heading: #f2deb0;
+  --amber-body: #c3ba98;
+  --red: #ef8f8f;
+  --red-ink: #f3aeae;
 
   /**
    * Cards are separated by surface value and a hairline, never by shadow. The
-   * handoff draws four weights and means four different things by them, so a
-   * dashed placeholder and an unchecked box are not rounded to the nearest
-   * border already in use.
+   * handoff draws five weights and means five different things by them, so an
+   * input border and an unchecked box are not rounded to the nearest border
+   * already in use.
    */
+  --line-nav: rgb(167 243 208 / 0.07);
   --line: rgb(167 243 208 / 0.08);
-  --line-strong: rgb(167 243 208 / 0.16);
-  --line-dashed: rgb(167 243 208 / 0.14);
-  --line-input: rgb(167 243 208 / 0.22);
+  --line-input: rgb(167 243 208 / 0.1);
+  --line-strong: rgb(167 243 208 / 0.14);
+  --line-check: rgb(167 243 208 / 0.28);
 
   /* Derived from mint rather than restating it: one hue, one source. */
   --focus-ring: rgb(from var(--mint) r g b / 0.55);
 }
 
 @theme inline {
+  --color-chrome: var(--chrome);
   --color-surface: var(--surface);
   --color-raised: var(--raised);
-  --color-raised-alt: var(--raised-alt);
+  --color-raised-muted: var(--raised-muted);
   --color-deep: var(--deep);
+  --color-control: var(--control);
+  --color-control-alt: var(--control-alt);
   --color-secondary: var(--secondary);
   --color-raised-hover: var(--raised-hover);
+  --color-raised-muted-hover: var(--raised-muted-hover);
   --color-surface-hover: var(--surface-hover);
   --color-mint: var(--mint);
   --color-mint-hover: var(--mint-hover);
   --color-mint-active: var(--mint-active);
   --color-mint-soft: var(--mint-soft);
+  --color-mint-dim: var(--mint-dim);
+  --color-on-mint: var(--on-mint);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
   --color-ink-3: var(--ink-3);
@@ -81,12 +118,15 @@
   --color-ink-7: var(--ink-7);
   --color-amber: var(--amber);
   --color-amber-ink: var(--amber-ink);
+  --color-amber-heading: var(--amber-heading);
+  --color-amber-body: var(--amber-body);
   --color-red: var(--red);
   --color-red-ink: var(--red-ink);
+  --color-line-nav: var(--line-nav);
   --color-line: var(--line);
-  --color-line-strong: var(--line-strong);
-  --color-line-dashed: var(--line-dashed);
   --color-line-input: var(--line-input);
+  --color-line-strong: var(--line-strong);
+  --color-line-check: var(--line-check);
 
   --font-sans: 'Geist Variable', ui-sans-serif, -apple-system, sans-serif;
   --font-mono:

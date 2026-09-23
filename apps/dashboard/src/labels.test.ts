@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatAge, issueKeyLabel } from './labels.ts'
+import { elidePath, formatAge, formatUptime, issueKeyLabel } from './labels.ts'
 
 describe('the compact age beside a title', () => {
   const now = new Date('2026-09-18T12:00:00.000Z').getTime()
@@ -43,5 +43,35 @@ describe('how a job is named in a list', () => {
   it('says the same for a job that has not loaded yet', () => {
     // The inbox holds an item whose job may not be in the list it has.
     expect(issueKeyLabel(undefined)).toBe('ad hoc')
+  })
+})
+
+describe('how long the service has been up', () => {
+  it('shows seconds only while there is nothing longer to say', () => {
+    expect(formatUptime(42)).toBe('42s')
+    expect(formatUptime(125)).toBe('2m')
+    expect(formatUptime(3661)).toBe('1h')
+    expect(formatUptime(90_000)).toBe('1d 1h')
+  })
+
+  it('reads a missing or negative number as just started', () => {
+    expect(formatUptime(-5)).toBe('0s')
+    expect(formatUptime(Number.NaN)).toBe('0s')
+  })
+})
+
+describe('a path elided to the width it is shown at', () => {
+  it('leaves a path that fits alone', () => {
+    expect(elidePath('/tmp/worktree')).toBe('/tmp/worktree')
+  })
+
+  it('keeps the end, counting the ellipsis in the width', () => {
+    const elided = elidePath('/Users/handler/.data/worktrees/repo/eng-412', 12)
+    expect(elided).toBe('…epo/eng-412')
+    expect(elided).toHaveLength(12)
+  })
+
+  it('never grows a path for a width of nothing', () => {
+    expect(elidePath('/tmp/worktree', 0)).toBe('…e')
   })
 })

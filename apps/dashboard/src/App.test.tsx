@@ -40,12 +40,17 @@ describe('system status page', () => {
     expect(screen.getByLabelText('Checking service status')).toBeInTheDocument()
   })
 
+  /**
+   * The health of the installation is one strip now rather than three cards,
+   * so the version, the bind address and the journal mode are one mono line
+   * and the installation's own identifier has moved down to Diagnostics.
+   */
   it('renders the service, database, and installation status', async () => {
     stubStatus(okStatus)
     renderAt('/system')
 
-    expect(await screen.findByText('All systems local')).toBeInTheDocument()
-    expect(screen.getByText('SQLite ready')).toBeInTheDocument()
+    expect(await screen.findByText('Service connected')).toBeInTheDocument()
+    expect(screen.getByText(/SQLite WAL/)).toBeInTheDocument()
     expect(screen.getByText(status.installation.id)).toBeInTheDocument()
   })
 
@@ -67,7 +72,7 @@ describe('system status page', () => {
 
     expect(await screen.findByText('Service unavailable')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Try again' }))
-    expect(await screen.findByText('All systems local')).toBeInTheDocument()
+    expect(await screen.findByText('Service connected')).toBeInTheDocument()
     expect(
       fetchMock.mock.calls.filter(([url]) => String(url) === '/api/status'),
     ).toHaveLength(2)

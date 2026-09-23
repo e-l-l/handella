@@ -25,7 +25,7 @@ export function ServiceUnreachable({
   return (
     <div
       aria-live="assertive"
-      className="flex flex-col gap-3 rounded-[22px] border border-red/30 bg-red/[0.09] p-6"
+      className="flex flex-col gap-3 rounded-2xl border border-red/30 bg-red/[0.09] p-6"
       role="alert"
     >
       <p className="font-mono text-[11px] uppercase tracking-[0.05em] text-red-ink">

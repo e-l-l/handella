@@ -299,8 +299,8 @@ describe('the issue list', () => {
     const fetchMock = stubApi()
     renderAt('/intake')
 
-    await screen.findByLabelText('Search')
-    await userEvent.type(screen.getByLabelText('Search'), 'login')
+    await screen.findByLabelText('Search issues')
+    await userEvent.type(screen.getByLabelText('Search issues'), 'login')
 
     await waitFor(() => {
       expect(
@@ -321,7 +321,9 @@ describe('the issue list', () => {
 
     expect(await screen.findByLabelText('Select ENG-412')).toBeDisabled()
     expect(
-      screen.getByText('Already the Linear issue for an active job.'),
+      screen.getByText(
+        'Already has an active job — open it from Jobs instead.',
+      ),
     ).toBeInTheDocument()
   })
 
@@ -437,7 +439,7 @@ describe('creating jobs from a selection', () => {
     )
 
     await userEvent.click(
-      screen.getByRole('button', { name: 'Create and dispatch 2 jobs' }),
+      screen.getByRole('button', { name: 'Dispatch 2 jobs now' }),
     )
 
     await waitFor(() => {
@@ -464,7 +466,7 @@ describe('creating jobs from a selection', () => {
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     await userEvent.click(
-      screen.getByRole('button', { name: 'Create and dispatch job' }),
+      screen.getByRole('button', { name: 'Dispatch job now' }),
     )
 
     expect(
@@ -481,7 +483,7 @@ describe('creating jobs from a selection', () => {
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     await userEvent.click(
-      screen.getByRole('button', { name: 'Create only, without dispatching' }),
+      screen.getByRole('button', { name: 'Create without dispatching' }),
     )
 
     expect(
@@ -501,7 +503,7 @@ describe('creating jobs from a selection', () => {
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     await userEvent.click(
-      screen.getByRole('button', { name: 'Create and dispatch job' }),
+      screen.getByRole('button', { name: 'Dispatch job now' }),
     )
 
     expect(
@@ -522,7 +524,7 @@ describe('creating jobs from a selection', () => {
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     await userEvent.click(
-      screen.getByRole('button', { name: 'Create and dispatch job' }),
+      screen.getByRole('button', { name: 'Dispatch job now' }),
     )
 
     await waitFor(() => {
@@ -552,14 +554,14 @@ describe('creating jobs from a selection', () => {
     renderAt('/intake')
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
-    await userEvent.type(screen.getByLabelText('Search'), 'exporter')
+    await userEvent.type(screen.getByLabelText('Search issues'), 'exporter')
     await screen.findByText('Retire the legacy exporter')
 
     expect(
       await screen.findByText(/Linear has not named a branch for this issue/),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('button', { name: 'Create and dispatch job' }),
+      screen.getByRole('button', { name: 'Dispatch job now' }),
     ).toBeDisabled()
   })
 
@@ -578,7 +580,7 @@ describe('creating jobs from a selection', () => {
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     await userEvent.click(screen.getByLabelText('Select ENG-500'))
     await userEvent.click(
-      screen.getByRole('button', { name: 'Create and dispatch 2 jobs' }),
+      screen.getByRole('button', { name: 'Dispatch 2 jobs now' }),
     )
 
     expect(
@@ -755,7 +757,7 @@ describe('coming back to intake', () => {
     await leaveAndReturn()
 
     expect(
-      await screen.findByRole('button', { name: 'Create and dispatch 2 jobs' }),
+      await screen.findByRole('button', { name: 'Dispatch 2 jobs now' }),
     ).toBeEnabled()
     expect(screen.getByLabelText('Base branch for ENG-500')).toHaveValue('main')
     expect(
@@ -778,7 +780,7 @@ describe('coming back to intake', () => {
     offers[0] = anOffer({
       heldByJobId: '123e4567-e89b-42d3-a456-426614174000',
     })
-    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await userEvent.click(screen.getByRole('button', { name: /^Refresh/ }))
 
     await screen.findByText(
       'A live job already holds this issue, and its canonical branch with it.',
@@ -787,7 +789,7 @@ describe('coming back to intake', () => {
     // Still selected, and refused: a Selection is not silently emptied by the
     // list moving under it.
     expect(
-      screen.getByRole('button', { name: 'Create and dispatch job' }),
+      screen.getByRole('button', { name: 'Dispatch job now' }),
     ).toBeDisabled()
   })
 
@@ -798,7 +800,7 @@ describe('coming back to intake', () => {
 
     await userEvent.click(await screen.findByLabelText('Select ENG-412'))
     offers.length = 0
-    await userEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await userEvent.click(screen.getByRole('button', { name: /^Refresh/ }))
 
     // One blocked selection blocks the batch, and the row that would untick
     // this one is no longer on the screen, so the card has to carry the way
@@ -811,7 +813,7 @@ describe('coming back to intake', () => {
 
     expect(
       screen.getByText(
-        'Pick an issue to classify it and give it a base branch.',
+        /The work class and base branch appear here once you tick an issue/,
       ),
     ).toBeInTheDocument()
   })

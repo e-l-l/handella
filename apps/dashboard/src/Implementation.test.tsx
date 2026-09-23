@@ -70,18 +70,22 @@ describe('the implementation spine', () => {
     expect(await screen.findByText(/round 2/)).toBeVisible()
   })
 
+  /**
+   * The logs are their own tab now, and opening the tab is not the same ask as
+   * opening a log: the default tail is a quarter of a megabyte per turn.
+   */
   it('reads the raw log only when the Handler opens it', async () => {
     const job = anImplementingJob()
     const fetchMock = stubApi({ jobs: [job], attempts: [anAttempt()] })
 
-    renderAt(`/jobs/${job.id}`)
+    renderAt(`/jobs/${job.id}?tab=logs`)
     await screen.findByText(/Attempt 1 of 3/)
 
     const logRequests = () =>
       fetchMock.mock.calls.filter(([url]) => String(url).includes('/log'))
     expect(logRequests()).toHaveLength(0)
 
-    await userEvent.click(screen.getByRole('button', { name: 'Raw log' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Show log' }))
 
     await waitFor(() => expect(logRequests().length).toBeGreaterThan(0))
   })
@@ -137,13 +141,18 @@ describe('a running job in the inbox', () => {
     renderAt('/')
 
     const running = await screen.findByText(job.title)
-    const slot = running.closest('a')
-    expect(slot).not.toBeNull()
+    // The row is no longer an anchor: it carries an "Open session" button, and
+    // a button may not sit inside a link — so the link is an overlay over the
+    // row rather than the row itself.
+    const row = running.closest('li')
+    expect(row).not.toBeNull()
+    // The overlay still opens the job, which the anchor used to be for.
+    expect(row?.querySelector(`a[href="/jobs/${job.id}"]`)).not.toBeNull()
     // Read as text rather than by element: the line is assembled from several
     // spans, and what the Handler sees is the sentence they make together.
     await waitFor(() => {
-      expect(slot?.textContent).toContain('attempt 1 of 3')
-      expect(slot?.textContent).toContain('npm test · exit 1')
+      expect(row?.textContent).toContain('attempt 1 of 3')
+      expect(row?.textContent).toContain('npm test · exit 1')
     })
   })
 })
