@@ -1,5 +1,12 @@
 # The dashboard opens the Codex session in a terminal, not a shell beside it
 
+_Amended by [ADR 0015](./0015-handella-observes-the-codex-session.md): the
+terminal is now where the plan is read and answered rather than a side channel,
+and Handella follows the session it opens. Amended by
+[ADR 0017](./0017-a-video-hands-planning-to-the-handler.md): a held Job's window
+starts Codex on a brief instead of resuming a session, under the same rule about
+nothing being interpolated into the launcher._
+
 A Job that is planning or implementing shows the Handler a spine of Milestones
 and, per Attempt, a raw log they can unroll. Both are derived: the spine is the
 readable subset of a conversation and the log is that conversation flattened

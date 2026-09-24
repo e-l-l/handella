@@ -8,7 +8,7 @@ These apply to every phase:
 
 - The application remains local-first, single-user, macOS-only, and bound to `127.0.0.1`.
 - The system never merges an original implementation PR, deploys code, or changes Linear workflow state.
-- Codex runs with workspace-write isolation and automatic approval review; unrestricted sandbox bypass is not allowed.
+- Unattended Codex passes inherit the Handler's own sandbox; Handella overrides only approval prompts, notifications and network access, and sets `danger-full-access` nowhere.
 - Linear canonical branch names are authoritative.
 - Secrets stay in an external, Git-ignored `.env`; persisted output is redacted.
 - Each completed phase includes focused automated tests for the behavior introduced in that phase.
@@ -21,7 +21,7 @@ Establish the TypeScript workspace, React/Vite dashboard, Fastify service, SQLit
 
 ## Phase 2: Core job domain and operator shell
 
-Implement the core records and lifecycle foundations: jobs, plan versions, runbook snapshots, attention items, and review rounds. Add the job state machine, basic dashboard navigation, attention inbox shell, job list/detail views, and server-sent event plumbing.
+Implement the core records and lifecycle foundations: jobs, runbook snapshots, attention items, implementation attempts, and review rounds. Add the job state machine, basic dashboard navigation, attention inbox shell, job list/detail views, and server-sent event plumbing.
 
 **Outcome:** Jobs and their history can be created, inspected, transitioned through validated states, and reflected live in the dashboard without external integrations.
 
@@ -39,27 +39,27 @@ Add Git and repository operations for refreshing a selected remote base, validat
 
 ## Phase 5: Routine planning and approval
 
-Add the Codex adapter for read-only planning, structured plan capture, plan revision history, an unbounded change-request cycle, approval, and immutable runbook snapshots.
+Add the Codex adapter for planning, the plan proposed and read inside the Codex session, job-level approval, and immutable runbook snapshots.
 
-**Outcome:** A Routine job can move from intake through a supervised, persisted planning flow and become approved for implementation with the exact runbook version it will execute.
+**Outcome:** A Routine job can move from intake through a supervised planning flow and become approved for implementation with the exact runbook version it will execute.
 
 ## Phase 6: Routine execution and ready PR
 
-Implement resumable Codex execution, JSONL milestone parsing, log storage and redaction, pause/stop/resume, bounded runbook repair cycles, GitHub PR creation, Linear linking, and structured progress display.
+Implement resumable Codex execution, JSONL milestone parsing, log storage and redaction, pause/stop/resume, one unattended implementation turn verified against GitHub, Linear linking, and structured progress display.
 
 **Outcome:** The primary v1 path works end to end: Linear or ad hoc intake → Routine plan approval → isolated Codex implementation → one ready-for-review GitHub PR.
 
 ## Phase 7: Recovery and operational hardening
 
-Handle process interruption, application and machine restarts, orphaned processes/worktrees, failure attention items, overlap warnings, and safe cleanup after the original PR is confirmed merged.
+Handle process interruption, application and machine restarts, orphaned processes/worktrees, failure attention items, session watching, and safe cleanup after the original PR is confirmed merged.
 
 **Outcome:** Interrupted or failed work is recoverable without losing its branch, worktree, session, or useful logs, and completed jobs are cleaned up safely.
 
 ## Phase 8: Feature planning workflow
 
-Add Feature routing, the Terminal.app or iTerm conversation wrapper, explicit `/grill-with-docs` invocation, structured plan import, same-session implementation handoff, and inclusion of glossary/ADR edits in the implementation PR.
+Add Feature routing and explicit `/grill-with-docs` invocation in the job's Codex session, together with inclusion of glossary/ADR edits in the implementation PR. The terminal-driven session and the same-session implementation handoff are now every job's, so what remains here is what makes a Feature different from a Routine.
 
-**Outcome:** Feature jobs can complete the interactive planning interview, receive dashboard approval, and resume the same Codex session for implementation.
+**Outcome:** Feature jobs complete the interactive planning interview in their own session and carry their design documents into the implementation PR.
 
 ## Phase 9: Slack intake and notifications
 

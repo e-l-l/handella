@@ -85,7 +85,7 @@ _Avoid_: Status, stage, phase
 **Suspension**:
 Why a Job is not progressing, when the reason is abnormal or the Handler stopped
 it deliberately. A Job waiting on the Handler in the ordinary course is not
-suspended.
+suspended — a Job in Plan Review is waiting, and so is a Job on Hold.
 _Avoid_: Pause, block, stall, hold
 
 **Attention Item**:
@@ -93,12 +93,31 @@ Something the Handler must look at. It may belong to a Job or stand alone, and
 it is resolved rather than deleted.
 _Avoid_: Notification, alert, todo
 
-**Plan Version**:
-One revision of the structured plan proposed for a Job: what this Job in
-particular will change, and how anyone could tell it worked. Every revision is
-kept, and there may be any number of them, because the Handler may ask for
-changes as often as the plan needs them. Only the newest can be answered.
-_Avoid_: Draft, proposal
+**Plan**:
+What a Job in particular will change, and how anyone could tell it worked.
+Prose in the Job's Codex Session rather than a record Handella holds: the
+Handler reads it in a terminal and answers it there, and approving is the one
+part of it the dashboard has a say in (docs/adr/0015).
+_Avoid_: Plan version, draft, proposal
+
+**Session Watch**:
+Handella following a Job's Codex Session through the file Codex writes it to,
+so a plan approved in the terminal and a pull request opened there are noticed
+without being reported. The second thing that runs on a timer
+(docs/adr/0015).
+_Avoid_: Poller, tail, listener
+
+**Handler Turn**:
+A turn in a Job's Codex Session that the Handler typed rather than Handella
+sent. Told apart by where the session file stood when Handella's own pass
+ended, never by what the turn says.
+_Avoid_: Manual turn, interactive turn, intervention
+
+**Hold**:
+A Job kept in `planning` with no pass behind it, because Handella will not plan
+it unattended and is waiting for the Handler to open its session. It holds no
+Slot and is not a Suspension: nothing has stopped (docs/adr/0017).
+_Avoid_: Pause, block, park
 
 **Runbook**:
 The procedure every Job's implementation follows, whatever the Job is: commit,
@@ -110,26 +129,26 @@ Jobs have approved against what it said.
 _Avoid_: Checklist, template, playbook, process
 
 **Runbook Snapshot**:
-The immutable copy of the Runbook a Job will execute, taken when its plan is
-approved. It holds the text and not merely a reference to a version, so a Job
+The immutable copy of the Runbook a Job will execute, taken when the Handler
+approves — in the dashboard, or by telling Codex to go in the terminal. It holds the text and not merely a reference to a version, so a Job
 can still say what it ran after the Handler has rewritten everything since.
 _Avoid_: Checklist, template
 
 **Codex Session**:
-The conversation a Job's planning and implementation happen inside, kept so
-Handella can return to it. A revision is a turn in the session that produced
-the plan it revises, rather than a fresh briefing, and Phase 6 implements in
-the session that planned. The Handler can return to it too: "Open session"
-resumes it in a terminal, which makes them a second voice in a conversation
-Handella's next pass continues from (docs/adr/0011).
+The conversation a Job's planning and implementation happen inside. The Plan is
+proposed and read there, approving resumes it for implementation, and the
+Handler finishes there whatever Handella's one turn left undone. "Open session"
+is how they reach it, and Handella follows the same conversation from the
+outside rather than being told about it (docs/adr/0011, docs/adr/0015).
 _Avoid_: Thread, run, context
 
 **Attempt**:
-One turn of implementation Codex takes on a Job: the first, or one of at most
-two autonomous repairs after it. The bound is on what Handella does unsupervised
-— a Handler who resumes a stopped Job grants a fresh three, because they have
-looked at it and said to go on.
-_Avoid_: Run, retry, pass
+Handella's one unattended implementation turn on a Job, taken in the Codex
+Session once the Plan is approved. Its ending is a record and not a verdict: the
+Job moves on only when GitHub shows an open pull request on the Canonical
+Branch, and a turn that ends without one hands the Job back to the Handler
+rather than to another turn (docs/adr/0015).
+_Avoid_: Retry, repair, round
 
 **Milestone**:
 Something the agent did that the Handler can read at a glance: a command and how
@@ -172,26 +191,17 @@ a process it can prove is the one it spawned, a directory it cannot prove is
 not the Handler's.
 _Avoid_: Stale, leaked, zombie, dangling
 
-Note: the scheduler uses "orphaned" for something else and narrower — a Job
-mid-implementation with no live pass behind it, which is the ordinary state
-between repair turns rather than residue.
-
-**Overlap**:
-Two live Jobs whose approved Plans name the same path. Predicted from what the
-planners said they would touch and never from what the turns do, so it is a
-warning the Handler reads and not a fact Handella acts on: it never delays
-either Job (docs/adr/0014).
-_Avoid_: Conflict, collision, contention
-
 **Queue Position**:
 Where a Job sits among those waiting for a Slot. Set by the Handler, who may
 reorder the queue; a Job with no position waits behind every Job that has one.
 _Avoid_: Priority, rank
 
 **Slot**:
-One of the three concurrent places Codex may be working. Planning holds one as
-surely as implementing does, and a suspended Job holds none: its worktree is
-kept, not worked in.
+One of the three concurrent places Handella may be running a Codex pass. Held by
+a pass and not by a Lifecycle State: a Job the Handler is driving in their own
+terminal is working and holds none, because the machine it occupies is theirs
+(docs/adr/0015). A suspended Job holds none either — its worktree is kept, not
+worked in.
 _Avoid_: Runner, worker, lane
 
 **Dispatch**:

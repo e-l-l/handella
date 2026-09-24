@@ -1,5 +1,9 @@
 # Let a plan be revised as many times as it takes
 
+_Superseded by [ADR 0015](./0015-handella-observes-the-codex-session.md): the
+plan is no longer a record to revise. The Handler answers the planner in the
+Codex session, which has no ceiling and keeps no revisions._
+
 The Handler may send a change request on a plan as often as they like; every
 revision is kept and any of them may be the one that is approved. The masterplan
 and the build phases originally allowed exactly one, which reads as a healthy

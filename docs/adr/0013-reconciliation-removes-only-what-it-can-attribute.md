@@ -1,5 +1,11 @@
 # Reconciliation polls for merges and removes only what it can attribute
 
+_Amended by [ADR 0015](./0015-handella-observes-the-codex-session.md):
+Reconciliation is no longer the only part of Handella that runs on a timer.
+Session Watch is the second, for the reason given here — what it waits for
+happens somewhere Handella cannot hear — on a much shorter interval, because a
+Handler who has just approved in their terminal is watching the dashboard._
+
 Reconciliation is a component of its own, with a timer, and it is the only part
 of Handella that has one. The scheduler says in its own header that it is
 event-driven and that a timer would be a second source of truth that is usually

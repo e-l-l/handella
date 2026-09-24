@@ -21,9 +21,9 @@ Success means reducing hands-on coordination time by at least 50%, measured acro
 - Store Slack and Linear secrets in an external, Git-ignored `.env` with owner-only permissions. Reuse existing GitHub and Codex CLI authentication.
 - Define these core records:
   - `Job`: source, Linear issue, canonical branch, selected base branch, work class, state, queue priority, worktree, Codex session, original PR, and timestamps.
-  - `PlanVersion`: structured plan, feedback, approval state, and approving timestamp.
+  - `Attempt`: the one unattended implementation turn Handella takes, how it ended, and where its log is.
   - `RunbookSnapshot`: immutable copy of the dashboard-managed runbook used by that job.
-  - `AttentionItem`: plan approval, blocker, disputed review, conflict proposal, ready PR, or failure.
+  - `AttentionItem`: plan approval, blocker, disputed review, conflict proposal, ready PR, failure, orphaned worktree, or a handoff to your terminal.
   - `ReviewRound`: review comments, agent verdicts, child branch, and child PR.
 - Implement typed adapters:
   - Linear: list assigned actionable issues, create issues, and fetch canonical branch names.
@@ -46,17 +46,14 @@ Success means reducing hands-on coordination time by at least 50%, measured acro
   - Dispatch blocks if Linear does not provide its canonical branch name or if that branch is already owned by an unknown job.
   - Create an isolated worktree from the latest selected remote base using Linear’s exact branch name.
 - Planning:
-  - Routine jobs run Codex read-only in the worktree and return a structured plan. You may approve it or send change requests until the plan is right; every revision is retained, and each one is answered in the same Codex session (ADR 0007).
-  - Feature jobs launch a configured Terminal.app or iTerm conversation wrapper. The wrapper drives a resumable Codex session turn-by-turn, explicitly invokes `/grill-with-docs`, and imports the resulting structured plan.
-  - Feature glossary and ADR edits are made in the feature worktree and included in the implementation PR.
-  - Approving the imported feature plan resumes the same Codex session for implementation.
+  - Jobs run Codex in the worktree and propose a plan inside the Codex session. You read it in a terminal and answer it there, or press Approve in the dashboard once you have; approving freezes the runbook snapshot and continues the same session into implementation (ADR 0015).
+  - An issue that leans on a video is not planned unattended: the job is held, and "Open session" starts Codex on the planning brief so you can supply a local path to the recording (ADR 0017).
+  - Feature jobs additionally invoke `/grill-with-docs` in that session, and their glossary and ADR edits are made in the feature worktree and included in the implementation PR.
 - Execution:
   - Run at most three jobs concurrently.
   - Queue order is manually adjustable, with FIFO as the fallback.
-  - Predicted overlap produces a warning but never serializes jobs.
-  - Codex inherits the user’s local model, reasoning, skills, hooks, and configuration.
-  - Unattended execution uses workspace-write isolation and automatic approval review; unrestricted sandbox bypass is forbidden.
-  - Execute the immutable runbook snapshot. A required step receives at most two autonomous repair cycles; continued failure pauses the job before any PR.
+  - Codex inherits the user’s local model, reasoning, skills, hooks, sandbox and configuration; Handella overrides only approval prompts, desktop notifications and network access (ADR 0016).
+  - Execute the immutable runbook snapshot. Handella takes one unattended turn: the job reaches PR open only when GitHub shows an open pull request on its canonical branch, and anything short of that hands the session back to you (ADR 0015).
   - Stopping a job pauses it and preserves its session, branch, worktree, and logs. After an app or machine restart, active jobs become Interrupted and require manual resume.
 - Pull requests:
   - Open one ready-for-review PR per Linear issue and link the issue.
@@ -75,18 +72,19 @@ Success means reducing hands-on coordination time by at least 50%, measured acro
 ## Delivery Plan
 
 1. Ship the Linear/ad hoc → Routine plan approval → Codex worktree → ready GitHub PR loop, including the scheduler, runbook, persistence, pause/resume, and attention inbox.
-2. Add Feature routing, terminal-based `/grill-with-docs`, structured plan import, and same-session implementation handoff.
+2. Add Feature routing and terminal-based `/grill-with-docs` in the job's own session.
 3. Add Slack Socket Mode capture, editable issue previews, Create/Create-and-dispatch, and actionable DMs.
 4. Add GitHub check repair, conflict proposals, review evaluation, child PRs, retention cleanup, and workflow metrics.
 
 ## Test and Acceptance Plan
 
-- Unit-test the job state machine, three-slot scheduler, queue reordering, retry limits, retention, branch collision handling, and runbook version snapshots.
-- Contract-test Linear, Slack, Codex JSONL/session resume, Git/GitHub, process interruption, and restart recovery using deterministic fakes.
+- Unit-test the job state machine, three-slot scheduler, queue reordering, session watching, retention, branch collision handling, and runbook version snapshots.
+- Contract-test Linear, Slack, Codex JSONL/session resume, Codex session rollouts, Git/GitHub, process interruption, and restart recovery using deterministic fakes.
 - Run labeled end-to-end tests against the real Slack workspace, Linear workspace, and GitHub repository; cleanup remains explicit.
 - Cover these acceptance scenarios:
-  - Routine Linear issue reaches a ready PR after one plan approval.
-  - Feature issue completes the terminal interview, imports its plan, and includes design documents in the PR.
+  - Routine Linear issue reaches a ready PR after one plan approval, whether approved in the dashboard or in the terminal.
+  - An issue carrying a video is held for you to plan in a terminal, and Handella follows the session you open.
+  - Feature issue completes the terminal interview and includes design documents in the PR.
   - Forwarded Slack thread creates and optionally dispatches a correctly linked Linear issue.
   - Missing Linear branch, inaccessible Slack thread, runbook failure, crash, CI failure, merge conflict, accepted review, and disputed review all enter the correct attention state.
   - No workflow can merge the original PR, deploy, bypass the Codex sandbox, or mutate Linear lifecycle states.

@@ -1,5 +1,13 @@
 # Let the implementation sandbox reach the network, and let the agent open the pull request
 
+_Amended by [ADR 0016](./0016-unattended-passes-use-the-handlers-codex-configuration.md):
+the network override stands, the explicit `workspace-write` does not — the
+sandbox mode is the Handler's to set. Amended by
+[ADR 0015](./0015-handella-observes-the-codex-session.md): believing nothing the
+agent reports is now the whole mechanism rather than a qualification on one.
+There is no completion report, and the pull request GitHub shows is the only
+thing that completes a Job._
+
 Planning runs read-only, and nothing about it needs a network beyond the model
 call Codex makes for itself. Implementation is not like that. A worktree is a
 fresh checkout with nothing ignored in it, so it holds no `node_modules`, no

@@ -1,5 +1,10 @@
 # Overlap is warned about at plan approval and never reaches the scheduler
 
+_Superseded by [ADR 0015](./0015-handella-observes-the-codex-session.md): the
+signal this rests on, `PlanStep.files`, went with the structured plan. The
+alternative this ADR named and refused — computing overlap from the diffs as the
+turns run — is still refused, for the reason given below._
+
 masterplan.md:56 says predicted overlap produces a warning but never serialises
 jobs. The second half is the hard half, because the obvious place to put a
 prediction about two Jobs touching one file is in front of the thing that starts

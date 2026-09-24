@@ -1,5 +1,10 @@
 # Handella creates worktrees itself rather than asking the agent to
 
+_Amended by [ADR 0016](./0016-unattended-passes-use-the-handlers-codex-configuration.md):
+the third reason below — that a read-only planner could not create a worktree
+even if asked — no longer holds, because Handella no longer sets the sandbox.
+The first two reasons, ordering and lifetime, are why this still stands._
+
 Dispatch cuts each Job's worktree with `git worktree add` from the Local
 Service. The alternative considered was leaving it to the agent: launch Codex in
 the main checkout and have its runbook create the worktree as its first step,
