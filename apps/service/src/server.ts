@@ -6,6 +6,7 @@ import { createCodexAdapter } from './adapters/codex-cli.js'
 import { unavailableFolderPicker } from './adapters/folders.js'
 import { createFolderPicker } from './adapters/folders-macos.js'
 import { createGitAdapter } from './adapters/git-cli.js'
+import { createCodexSessions } from './adapters/codex-sessions-fs.js'
 import { createGitHubAdapter } from './adapters/github-cli.js'
 import { createProcessInspector } from './adapters/processes-ps.js'
 import { unavailableTerminal } from './adapters/terminal.js'
@@ -13,6 +14,8 @@ import { createTerminalOpener } from './adapters/terminal-macos.js'
 import { buildApp } from './app.js'
 import { createDispatcher } from './domain/dispatch.js'
 import { createMergeCheck } from './domain/merge-check.js'
+import { createPullRequestCheck } from './domain/pull-request-check.js'
+import { createSessionWatch } from './domain/session-watch.js'
 import { createReconciler } from './domain/reconcile.js'
 import { createScheduler } from './domain/scheduler.js'
 import { loadConfig } from './config.js'
@@ -76,6 +79,8 @@ async function main(): Promise<void> {
   const github = createGitHubAdapter()
   const processes = createProcessInspector()
   const mergeCheck = createMergeCheck({ git, github, store })
+  const pullRequests = createPullRequestCheck({ git, github })
+  const codexSessions = createCodexSessions()
   // The dialog is AppleScript, so anywhere else the Handler types the path
   // and is told so, rather than being told osascript is missing.
   // Both of these open something in the Handler's own login session, which
@@ -126,6 +131,15 @@ async function main(): Promise<void> {
     )
   }
 
+  // Built before the scheduler so every pass can tell it when the session is
+  // Handella's and when it goes back to being the Handler's.
+  const sessionWatch = createSessionWatch({
+    codexSessions,
+    logger: app.log,
+    pullRequests,
+    store,
+  })
+
   const scheduler = createScheduler({
     broadcaster,
     codex,
@@ -134,6 +148,7 @@ async function main(): Promise<void> {
     linear,
     logRoot: config.logRoot,
     logger: app.log,
+    sessionWatch,
     store,
   })
 
@@ -185,11 +200,19 @@ async function main(): Promise<void> {
   // asks for that here: it is not ordered against anything, and a synchronous
   // walk of the worktree root is not worth making the Handler wait for.
   reconciler.start()
+  // After the scheduler, so a Job it has just claimed is already fenced off as
+  // Handella's before the first read of anybody's session.
+  sessionWatch.start()
 
   app.addHook('onClose', async () => {
     scheduler.stop()
     reconciler.stop()
-    await Promise.all([scheduler.whenIdle(), reconciler.whenIdle()])
+    sessionWatch.stop()
+    await Promise.all([
+      scheduler.whenIdle(),
+      reconciler.whenIdle(),
+      sessionWatch.whenIdle(),
+    ])
     database.close()
   })
 

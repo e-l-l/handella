@@ -24,6 +24,7 @@ import {
   type JobSuspension,
   type JobTransitionRecord,
   type Milestone,
+  type SessionWatchStatus,
   type MilestoneKind,
   type CreateRepository,
   type CreateRunbookVersion,
@@ -81,6 +82,7 @@ import {
   reviewRounds,
   runbookSnapshots,
   runbookVersions,
+  sessionWatches,
 } from '../database/schema.js'
 
 type JobRow = typeof jobs.$inferSelect
@@ -93,6 +95,7 @@ type ReviewRow = typeof reviewRounds.$inferSelect
 type AttemptRow = typeof implementationAttempts.$inferSelect
 type MilestoneRow = typeof milestones.$inferSelect
 type CodexProcessRow = typeof codexProcesses.$inferSelect
+type SessionWatchRow = typeof sessionWatches.$inferSelect
 type Transaction = Parameters<Parameters<HandellaDatabase['transaction']>[0]>[0]
 /** Whatever a read can run on: the connection outside a unit of work, the transaction inside one. */
 type Executor = HandellaDatabase | Transaction
@@ -192,6 +195,36 @@ export interface RequestHandlerInputInput {
   title: string
 }
 
+/**
+ * Where Session Watch stands on one Job's Codex session. Dates rather than the
+ * ISO strings the wire records carry: nothing outside the service reads this,
+ * and the comparisons it exists for are arithmetic.
+ */
+export interface SessionWatchRecord {
+  byteOffset: number
+  createdAt: Date
+  jobId: string
+  lastTurnId: string | null
+  missingSince: Date | null
+  rolloutPath: string | null
+  status: SessionWatchStatus
+  updatedAt: Date
+}
+
+/**
+ * Whatever the watcher has learned since it last wrote. Every field but the
+ * status is optional because a pass that only moved the offset should not have
+ * to restate where the file is.
+ */
+export interface AdvanceSessionWatchInput {
+  byteOffset?: number
+  jobId: string
+  lastTurnId?: string | null
+  missingSince?: Date | null
+  rolloutPath?: string | null
+  status: SessionWatchStatus
+}
+
 export interface RecordMilestoneInput {
   attemptId: string
   detail: string | null
@@ -257,6 +290,41 @@ export interface Store {
   requestHandlerInput(input: RequestHandlerInputInput): void
   /** The Handler is back in the session, so the item that asked for them is answered. */
   resolveHandlerInput(jobId: string): void
+  /**
+   * Where Session Watch stands on every Job it is following. Read as a set
+   * once per pass rather than a row at a time, because the pass walks every
+   * Job anyway.
+   */
+  listSessionWatches(): SessionWatchRecord[]
+  /**
+   * What the watcher learned, written without announcing anything: the offset
+   * moves every few seconds, and a `job.changed` per move would have every
+   * open dashboard refetch on the fact that a file got longer.
+   */
+  advanceSessionWatch(input: AdvanceSessionWatchInput): void
+  /**
+   * Handella will not plan this Job unattended, so it waits for the Handler to
+   * open a session in its worktree. Holds no Slot and is not a Suspension:
+   * nothing stopped, and there is nothing to resume (docs/adr/0017).
+   */
+  holdPlanningForHandler(input: { body: string; jobId: string }): Job
+  /**
+   * The session the Handler opened in a held worktree, which Handella found by
+   * its rollout. Refuses a Job that already has one: the session a Job holds is
+   * the conversation its whole life happens in.
+   */
+  adoptDiscoveredSession(input: {
+    jobId: string
+    rolloutPath: string
+    sessionId: string
+  }): Job
+  /**
+   * The Handler approved in the terminal: the session has begun writing in the
+   * worktree. Freezes the Runbook and moves the Job in one write, exactly as
+   * `approveJob` does, because the guard on `implementing` reads the snapshot
+   * and a Job cannot implement without one (docs/adr/0015).
+   */
+  beginImplementationFromTerminal(input: { jobId: string }): Job
   /**
    * The scheduler's claim: the move into the running state and the pass that
    * holds the Slot, in one write. Synchronous and first, so the count a tick
@@ -504,6 +572,11 @@ const requiresRunbookSnapshot: TransitionGuard = (tx, job) => {
 const transitionGuards: Partial<Record<JobState, TransitionGuard>> = {
   queued: requiresCanonicalBranch,
   approved: requiresRunbookSnapshot,
+  // Asked on the way into implementation as well as on the way into
+  // `approved`, because there are two ways in: the dashboard's approval, and
+  // the Handler approving in the terminal (docs/adr/0015). A bare transition
+  // is refused by the same rule.
+  implementing: requiresRunbookSnapshot,
 }
 
 const toJob = (row: JobRow): Job => ({
@@ -612,6 +685,17 @@ const toReviewRound = (row: ReviewRow): ReviewRound => ({
  * reports. Formatting it for a browser that will never see it would only mean
  * parsing it back.
  */
+const toSessionWatch = (row: SessionWatchRow): SessionWatchRecord => ({
+  byteOffset: row.byteOffset,
+  createdAt: row.createdAt,
+  jobId: row.jobId,
+  lastTurnId: row.lastTurnId ?? null,
+  missingSince: row.missingSince ?? null,
+  rolloutPath: row.rolloutPath ?? null,
+  status: row.status,
+  updatedAt: row.updatedAt,
+})
+
 const toCodexProcess = (row: CodexProcessRow): CodexProcessRecord => ({
   id: row.id,
   jobId: row.jobId,
@@ -1632,6 +1716,189 @@ export function createStore(options: CreateStoreOptions): Store {
           now,
           events,
         )
+      })
+    },
+
+    listSessionWatches() {
+      return database.select().from(sessionWatches).all().map(toSessionWatch)
+    },
+
+    advanceSessionWatch(input) {
+      // No event, and no transaction: this is one row nothing else reads
+      // within a unit of work, written several times a minute per followed
+      // Job. Announcing it would make a file getting longer look like news.
+      const now = clock()
+      const existing = database
+        .select()
+        .from(sessionWatches)
+        .where(eq(sessionWatches.jobId, input.jobId))
+        .get()
+
+      const next = {
+        byteOffset: input.byteOffset ?? existing?.byteOffset ?? 0,
+        createdAt: existing?.createdAt ?? now,
+        jobId: input.jobId,
+        lastTurnId:
+          input.lastTurnId === undefined
+            ? (existing?.lastTurnId ?? null)
+            : input.lastTurnId,
+        missingSince:
+          input.missingSince === undefined
+            ? (existing?.missingSince ?? null)
+            : input.missingSince,
+        rolloutPath:
+          input.rolloutPath === undefined
+            ? (existing?.rolloutPath ?? null)
+            : input.rolloutPath,
+        status: input.status,
+        updatedAt: now,
+      }
+
+      database
+        .insert(sessionWatches)
+        .values(next)
+        .onConflictDoUpdate({ set: next, target: sessionWatches.jobId })
+        .run()
+    },
+
+    holdPlanningForHandler(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        // The pass never started, so there is no Slot to give back beyond the
+        // claim the scheduler made a moment ago.
+        tx.update(jobs)
+          .set({ codexPass: null, hold: 'handlerPlanning', updatedAt: now })
+          .where(eq(jobs.id, input.jobId))
+          .run()
+
+        raiseItem(
+          tx,
+          openItemsOfKinds(tx, input.jobId, [handlerInputKind]),
+          {
+            body: input.body,
+            jobId: input.jobId,
+            rule: { kind: handlerInputKind, title: 'Planning needs you' },
+          },
+          now,
+          events,
+        )
+
+        // Written here rather than by the watcher, so the moment the hold
+        // began is the moment a session opened in this worktree has to beat.
+        tx.insert(sessionWatches)
+          .values({
+            byteOffset: 0,
+            createdAt: now,
+            jobId: input.jobId,
+            lastTurnId: null,
+            missingSince: null,
+            rolloutPath: null,
+            status: 'discovering',
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            set: { createdAt: now, status: 'discovering', updatedAt: now },
+            target: sessionWatches.jobId,
+          })
+          .run()
+
+        const job = toJob({
+          ...current,
+          codexPass: null,
+          hold: 'handlerPlanning',
+          updatedAt: now,
+        })
+        events.push(jobChanged(job))
+        return job
+      })
+    },
+
+    adoptDiscoveredSession(input) {
+      return commit((tx, events, now) => {
+        const current = readJob(tx, input.jobId)
+
+        // The session a Job holds is the conversation its whole life happens
+        // in, so a second one is not something to quietly swap in.
+        if (current.codexSessionId !== null) {
+          throw transitionGuardFailed(
+            `Job ${input.jobId} is already in a Codex session`,
+          )
+        }
+
+        tx.update(jobs)
+          .set({ codexSessionId: input.sessionId, updatedAt: now })
+          .where(eq(jobs.id, input.jobId))
+          .run()
+
+        tx.update(sessionWatches)
+          .set({
+            byteOffset: 0,
+            rolloutPath: input.rolloutPath,
+            status: 'following',
+            updatedAt: now,
+          })
+          .where(eq(sessionWatches.jobId, input.jobId))
+          .run()
+
+        // The Handler did what the item asked: they opened the session.
+        resolveItems(
+          tx,
+          openItemsOfKinds(tx, input.jobId, [handlerInputKind]),
+          now,
+          events,
+        )
+
+        const job = toJob({
+          ...current,
+          codexSessionId: input.sessionId,
+          updatedAt: now,
+        })
+        events.push(jobChanged(job))
+        return job
+      })
+    },
+
+    beginImplementationFromTerminal(input) {
+      return commit((tx, events, now) => {
+        readJob(tx, input.jobId)
+
+        // The same freeze `approveJob` writes, and for the same reason: the
+        // guard on `implementing` reads it, and a Job that reached
+        // implementation without one could not say what procedure it runs by.
+        const runbook = readActiveRunbook(tx)
+        tx.insert(runbookSnapshots)
+          .values({
+            id: newId(),
+            jobId: input.jobId,
+            runbookVersionId: runbook.id,
+            content: runbook.content,
+            createdAt: now,
+          })
+          .run()
+
+        const job = applyTransition(
+          tx,
+          {
+            actor: 'system',
+            expectedState: 'planReview',
+            jobId: input.jobId,
+            reason:
+              'The Handler approved in the terminal: the session began changing files',
+            to: 'implementing',
+          },
+          now,
+          events,
+        )
+
+        resolveItems(
+          tx,
+          openItemsOfKinds(tx, input.jobId, [handlerInputKind]),
+          now,
+          events,
+        )
+
+        return job
       })
     },
 

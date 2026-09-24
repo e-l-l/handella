@@ -25,6 +25,7 @@ import {
   transitionGuardFailed,
 } from './errors.js'
 import { createPullRequestCheck } from './pull-request-check.js'
+import type { SessionWatch } from './session-watch.js'
 import type { Store } from './store.js'
 import { createWorkTracker } from './work-tracker.js'
 
@@ -57,6 +58,12 @@ interface SchedulerOptions {
   logger?: SchedulerLogger
   /** Where an Attempt's raw stream is written. */
   logRoot: string
+  /**
+   * Told when a pass of Handella's owns a Job's session and when it stops
+   * owning it, so the turns it takes are not read back as the Handler's
+   * (docs/adr/0015). Absent in the tests that are about the scheduler alone.
+   */
+  sessionWatch?: Pick<SessionWatch, 'passEnded' | 'passStarted'>
   store: Store
 }
 
@@ -66,8 +73,17 @@ interface SchedulerOptions {
  * would be a second source of truth that is usually wrong.
  */
 export function createScheduler(options: SchedulerOptions): Scheduler {
-  const { broadcaster, codex, git, github, linear, logRoot, logger, store } =
-    options
+  const {
+    broadcaster,
+    codex,
+    git,
+    github,
+    linear,
+    logRoot,
+    logger,
+    sessionWatch,
+    store,
+  } = options
 
   let unsubscribe: (() => void) | undefined
   let running = false
@@ -147,6 +163,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   const runPlanningPass = async (job: StartableJob): Promise<void> => {
     const abort = new AbortController()
     passes.set(job.id, abort)
+    sessionWatch?.passStarted(job.id)
     const codexProcess = recordProcess(job.id, 'plan')
 
     try {
@@ -213,6 +230,9 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     } finally {
       codexProcess.release()
       passes.delete(job.id)
+      // Before the slot goes back, so the session cannot be read as the
+      // Handler's in the window where the next tick could already be running.
+      await sessionWatch?.passEnded(job.id)
       releaseSlot(job.id)
     }
   }
@@ -282,6 +302,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   const runImplementationPass = async (job: StartableJob): Promise<void> => {
     const abort = new AbortController()
     passes.set(job.id, abort)
+    sessionWatch?.passStarted(job.id)
     const codexProcess = recordProcess(job.id, 'implement')
 
     let attempt: Attempt | undefined
@@ -431,6 +452,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       log = undefined
       if (descriptor !== undefined) closeSync(descriptor)
       passes.delete(job.id)
+      await sessionWatch?.passEnded(job.id)
       releaseSlot(job.id)
       if (!shuttingDown) flushProgress(job.id)
     }

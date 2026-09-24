@@ -4,6 +4,8 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
+import { codexSessionIdShape } from '@handella/contracts'
+
 import { terminalUnavailable } from '../domain/errors.js'
 import { isMissingCommand, stderrOf } from './command.js'
 import type { TerminalOpener, TerminalRequest } from './terminal.js'
@@ -61,23 +63,8 @@ export const canonicalNameFor = (application: string): string =>
     (known) => known.toLowerCase() === application.toLowerCase(),
   ) ?? application
 
-/**
- * What a session id may look like before it is allowed to become text.
- *
- * Every value this adapter handles reaches its process as an `argv` item, the
- * session id included: it is written to a file of its own and read back into
- * `codex resume "$session"`. What that does not cover is the id's own shape. A
- * newline makes the file two lines and the read keeps only the first; a
- * leading dash reaches `codex resume` as a flag rather than as a session. The
- * id comes from Codex's own `thread.started` event and is a UUID or a
- * `thr_`-style name, so the shape is narrow and worth insisting on rather than
- * patching around — an id outside it is Codex having changed, not a string to
- * escape.
- */
-const sessionIdShape = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-
 const checkSessionId = (sessionId: string): void => {
-  if (!sessionIdShape.test(sessionId)) {
+  if (!codexSessionIdShape.test(sessionId)) {
     throw terminalUnavailable(
       'That job’s Codex session id is not a shape Handella will hand to Codex',
     )
