@@ -10,9 +10,9 @@
  */
 export {
   availableSlots,
+  isInFlight,
   isQueued,
   isRunning,
   maxConcurrency,
-  maxImplementationAttempts,
   orderQueue,
 } from '@handella/contracts'

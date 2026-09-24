@@ -5,11 +5,9 @@ import {
   canonicalBranchForRound,
   defaultBaseBranch,
   isSettledJobState,
-  isRepairable,
   isTerminalJobState,
   settledJobStates,
   orderQueue,
-  maxImplementationAttempts,
   type Attempt,
   type AttemptOutcome,
   type AttentionItem,
@@ -25,7 +23,6 @@ import {
   type JobState,
   type JobSuspension,
   type JobTransitionRecord,
-  type ImplementationReport,
   type Milestone,
   type MilestoneKind,
   type CreateRepository,
@@ -44,6 +41,7 @@ import {
   desc,
   eq,
   inArray,
+  isNotNull,
   isNull,
   max,
   ne,
@@ -72,7 +70,6 @@ import {
   transitionGuardFailed,
 } from './errors.js'
 import { attemptLogPathFor } from './attempt-log.js'
-import { parseImplementationReport } from './implementation-report.js'
 import {
   attentionItems,
   codexProcesses,
@@ -180,7 +177,19 @@ export interface FinishAttemptInput {
   attemptId: string
   failureReason: string | null
   outcome: AttemptOutcome
-  report: ImplementationReport | null
+}
+
+export interface StartPassInput {
+  from: JobState
+  jobId: string
+  kind: CodexPassKind
+  to: JobState
+}
+
+export interface RequestHandlerInputInput {
+  body: string
+  jobId: string
+  title: string
 }
 
 export interface RecordMilestoneInput {
@@ -216,10 +225,8 @@ export interface Store {
    */
   approveJob(input: ApproveJobInput): Job
   /**
-   * Opens the next implementation turn and numbers it. Joins the open round
-   * while that round has turns left and its last one ended in a way Handella
-   * may answer by itself; otherwise opens a new round, which only a Handler
-   * resume can reach.
+   * Opens the implementation turn. Refuses while one is still open: a second
+   * turn beside an unfinished one would be two agents in one session.
    */
   startAttempt(input: StartAttemptInput): Attempt
   /** Closes the turn with how it ended. The row is never written to again. */
@@ -229,32 +236,38 @@ export interface Store {
    * than a dashboard should refetch, so the pass coalesces its own announcing.
    */
   recordMilestone(input: RecordMilestoneInput): Milestone
+  /** Every turn, oldest first. */
   listAttempts(jobId: string): Attempt[]
-  /**
-   * The job's newest turn. The ordering that makes `listAttempts().at(-1)` the
-   * right row lives in the query, and a caller should not have to know it — or
-   * read every earlier turn's report to reach the last one.
-   */
-  latestAttempt(jobId: string): Attempt | undefined
   listMilestones(jobId: string): Milestone[]
   /** Where a turn's raw stream was written, for the endpoint that serves it. */
   attemptLogPath(input: { attemptId: string; jobId: string }): string
   /**
-   * The pull request Handella found on the job's branch — found, rather than
-   * reported: the url the agent claimed is kept on the attempt and this is the
-   * one GitHub actually answered with.
-   *
-   * Recording it and moving the job are one write. Two would let a job reach
-   * `prOpen` carrying no url, or hold a url while the orphan rule started
-   * another ninety-minute turn against the pull request it names.
+   * The pull request Handella found on the job's branch — found, never
+   * reported: this is the one GitHub actually answered with. Recording it and
+   * moving the job are one write, so a job cannot reach `prOpen` carrying no
+   * url. Resolves the "needs you" item, because the pull request is the
+   * answer it was waiting for.
    */
   openPullRequest(input: { jobId: string; url: string }): Job
   /**
-   * An implementation with nowhere left to go. Suspended by the system with a
-   * failure item carrying the reason, and left exactly where it is: the job is
-   * still mid-implementation, and its worktree still holds the work.
+   * Handella has handed this Job to the Handler's terminal and is waiting on
+   * what they do there (docs/adr/0015). One item per Job: raising again while
+   * one is open changes nothing, so an idle session asks once.
    */
-  failImplementation(input: { body: string; jobId: string }): Job
+  requestHandlerInput(input: RequestHandlerInputInput): void
+  /** The Handler is back in the session, so the item that asked for them is answered. */
+  resolveHandlerInput(jobId: string): void
+  /**
+   * The scheduler's claim: the move into the running state and the pass that
+   * holds the Slot, in one write. Synchronous and first, so the count a tick
+   * computed cannot be spent twice (docs/adr/0015).
+   */
+  startPass(input: StartPassInput): Job
+  /**
+   * The pass is over, however it ended, and its Slot is given back. Announces
+   * the job, because a freed Slot is what the scheduler waits on.
+   */
+  endPass(jobId: string): void
   /**
    * The Codex process a pass has just started, so it can be found again after
    * the process that started it is gone.
@@ -335,18 +348,19 @@ export interface Store {
   /** The Runbook a plan approved now would execute: the highest version. */
   activeRunbook(): RunbookVersion
   /**
-   * Nothing this process started is still running, so anything the database
-   * says is planning or implementing was cut off mid-pass.
+   * Nothing this process started is still running, so every Slot is given back
+   * and any turn the database still calls open ended when this process did.
    *
-   * A planning job is returned to the queue and suspended rather than left
-   * where it was: `planning` holds a slot, and after three restarts mid-plan an
-   * untouched installation would never start a job again.
+   * A planning job Handella was planning is returned to the queue and
+   * suspended rather than left where it was: it holds the Handler's attention
+   * for a pass that no longer exists. A held job — one waiting for the Handler
+   * to plan it in their terminal — lost nothing and is left alone.
    *
-   * An implementing job is suspended where it stands. It is not re-queued: its
-   * worktree holds work, and queueing it would ask Handella to plan a job it
-   * has already approved. Suspending it is also what stops the scheduler
-   * treating it as a turn that merely lost its pass and starting another —
-   * masterplan.md has an interrupted job wait for the Handler.
+   * An implementing job is suspended where it stands only when the turn cut
+   * off was Handella's own. One with no open turn is the Handler's, driven
+   * from their terminal across the restart, and telling them it was
+   * interrupted would be telling them about a process that was never theirs
+   * (docs/adr/0015).
    */
   markInterrupted(): Job[]
   recordCodexSession(input: { jobId: string; sessionId: string }): Job
@@ -403,17 +417,6 @@ const suspensionAttention: Partial<Record<JobSuspension, AttentionRule>> = {
 }
 
 /**
- * What an implementation that has run out of repair turns raises, instead of
- * the generic blocker `stoppedBySystem` would otherwise carry. The Handler
- * already knows the job stopped; what they need is why, and a failure item is
- * where the reason goes.
- */
-const implementationFailure: AttentionRule = {
-  kind: 'failure',
-  title: 'Implementation could not finish',
-}
-
-/**
  * What a merge that could not be tidied up after raises. The pull request is
  * merged either way — that part is GitHub's fact, not Handella's — so this is
  * not a job that failed but a directory that was left behind, and the item is
@@ -449,15 +452,16 @@ const lifecycleKinds = kindsOf(attentionOnEnter)
 
 /**
  * What a resume answers: derived from the same rules that raise it, so a new
- * reason to suspend cannot be left unanswerable. The failure item joins the
- * suspension items because a Handler who resumes a job has read the failure and
- * decided what to do about it; leaving it open would ask them to answer it
- * twice.
+ * reason to suspend cannot be left unanswerable.
  */
-const resumableKinds = kindsOf({
-  ...suspensionAttention,
-  implementation: implementationFailure,
-})
+const resumableKinds = kindsOf(suspensionAttention)
+
+/**
+ * What Handella raises when it hands a Job to the Handler's terminal. One
+ * kind, several titles: the title says which handoff this is, and the body
+ * says why (docs/adr/0015).
+ */
+const handlerInputKind: AttentionItemKind = 'handlerInput'
 
 /**
  * What has to be true of a job before it may enter a state, asked on every
@@ -509,6 +513,8 @@ const toJob = (row: JobRow): Job => ({
   workClass: row.workClass,
   state: row.state,
   suspension: row.suspension ?? null,
+  hold: row.hold ?? null,
+  codexPass: row.codexPass ?? null,
   linearIssueKey: row.linearIssueKey ?? null,
   linearIssueId: row.linearIssueId ?? null,
   linearIssueUrl: row.linearIssueUrl ?? null,
@@ -552,35 +558,13 @@ const toTransition = (row: TransitionRow): JobTransitionRecord => ({
   occurredAt: row.occurredAt.toISOString(),
 })
 
-/**
- * A report as it was stored, or nothing.
- *
- * Read defensively rather than asserted: the schema a report was written under
- * is the schema of the day it was written, and a field added to
- * `ImplementationReportSchema` later would otherwise turn every historical row
- * into a failed read — of an endpoint the job page and the inbox both call. The
- * row still says a turn happened and how it ended, which is what the spine
- * draws; the report is the part that may age out.
- */
-const storedReport = (raw: string | null): ImplementationReport | null => {
-  if (raw === null) return null
-  try {
-    return parseImplementationReport(raw, 'A stored completion report')
-  } catch {
-    return null
-  }
-}
-
 const toAttempt = (row: AttemptRow): Attempt => ({
   id: row.id,
   jobId: row.jobId,
-  round: row.round,
-  attempt: row.attempt,
   codexSessionId: row.codexSessionId,
   startedAt: row.startedAt.toISOString(),
   endedAt: row.endedAt?.toISOString() ?? null,
   outcome: row.outcome ?? null,
-  report: storedReport(row.report),
   failureReason: row.failureReason ?? null,
 })
 
@@ -787,13 +771,11 @@ export function createStore(options: CreateStoreOptions): Store {
 
   /**
    * Stopped where it stands: the suspension, the item it raises, and the
-   * announcement, in that order. Three callers did exactly this by hand —
-   * `suspendJob`, the held branch of `markInterrupted`, and `failImplementation`
-   * — so the next change to how a suspension announces itself is one edit.
+   * announcement, in that order. `suspendJob` and the held branch of
+   * `markInterrupted` both do exactly this, so the next change to how a
+   * suspension announces itself is one edit.
    *
-   * `rule` overrides the table for the one suspension that says more than
-   * "stopped": an implementation out of repair turns raises a failure carrying
-   * why, rather than the generic blocker.
+   * `rule` overrides the table for a suspension that says more than "stopped".
    */
   const suspendInPlace = (
     tx: Transaction,
@@ -1075,6 +1057,8 @@ export function createStore(options: CreateStoreOptions): Store {
           worktreePath: null,
           codexSessionId: null,
           originalPrUrl: null,
+          hold: null,
+          codexPass: null,
           createdAt: now,
           updatedAt: now,
         }
@@ -1377,16 +1361,40 @@ export function createStore(options: CreateStoreOptions): Store {
 
     markInterrupted() {
       return commit((tx, events, now) => {
+        // Whose turn was cut off, read before the rows are closed: an
+        // implementing job with an open turn was Handella's; one without is
+        // the Handler's, driven from their terminal, and is left alone.
+        const cutOff = new Set(
+          tx
+            .select({ jobId: implementationAttempts.jobId })
+            .from(implementationAttempts)
+            .where(isNull(implementationAttempts.endedAt))
+            .all()
+            .map((row) => row.jobId),
+        )
+
         // Any turn the database still calls open ended when this process did.
         tx.update(implementationAttempts)
           .set({ endedAt: now, outcome: 'interrupted' })
           .where(isNull(implementationAttempts.endedAt))
           .run()
 
+        // No pass of Handella's survived the restart, so no Slot is held.
+        tx.update(jobs)
+          .set({ codexPass: null })
+          .where(isNotNull(jobs.codexPass))
+          .run()
+
         const planning = tx
           .select()
           .from(jobs)
-          .where(and(eq(jobs.state, 'planning'), isNull(jobs.suspension)))
+          .where(
+            and(
+              eq(jobs.state, 'planning'),
+              isNull(jobs.suspension),
+              isNull(jobs.hold),
+            ),
+          )
           .all()
 
         const implementing = tx
@@ -1394,11 +1402,12 @@ export function createStore(options: CreateStoreOptions): Store {
           .from(jobs)
           .where(and(eq(jobs.state, 'implementing'), isNull(jobs.suspension)))
           .all()
+          .filter((row) => cutOff.has(row.id))
 
         const requeued = planning.map((row) =>
           stopAndRequeue(
             tx,
-            row,
+            { ...row, codexPass: null },
             {
               body: null,
               reason: 'Interrupted by a restart',
@@ -1412,7 +1421,7 @@ export function createStore(options: CreateStoreOptions): Store {
         const held = implementing.map((row) =>
           suspendInPlace(
             tx,
-            row,
+            { ...row, codexPass: null },
             { body: null, suspension: 'interrupted' },
             now,
             events,
@@ -1427,56 +1436,34 @@ export function createStore(options: CreateStoreOptions): Store {
       return commit((tx, events, now) => {
         const job = readJob(tx, input.jobId)
 
-        const existing = tx
-          .select()
-          .from(implementationAttempts)
-          .where(eq(implementationAttempts.jobId, input.jobId))
-          .orderBy(
-            asc(implementationAttempts.round),
-            asc(implementationAttempts.attempt),
-          )
-          .all()
-
-        const last = existing.at(-1)
-
-        // An open row means the turn it stands for was never closed, and the
-        // rule below would read that as "not repairable" and open a new round
-        // — a fresh budget, every time, for as long as the fault lasts. Refused
+        // An open row means the turn it stands for was never closed, and a
+        // second turn beside it would be two agents in one session. Refused
         // here rather than guarded in the scheduler, because this is the write
-        // that would make it unbounded.
-        if (last !== undefined && last.outcome === null) {
+        // that would make it so.
+        const open = tx
+          .select({ id: implementationAttempts.id })
+          .from(implementationAttempts)
+          .where(
+            and(
+              eq(implementationAttempts.jobId, input.jobId),
+              isNull(implementationAttempts.endedAt),
+            ),
+          )
+          .get()
+        if (open !== undefined) {
           throw transitionGuardFailed(
             `Job ${input.jobId} still has an open implementation attempt`,
           )
         }
 
-        // 0 before the first turn, so the `openRound + 1` below opens round 1
-        // without a second arm saying so.
-        const openRound = last?.round ?? 0
-        const takenInRound = existing.filter(
-          (row) => row.round === openRound,
-        ).length
-
-        // The rule that makes a resume a fresh budget without a column saying
-        // so: a turn Handella may answer by itself continues the round, and
-        // anything else can only have been reached by the Handler resuming.
-        const continues =
-          last !== undefined &&
-          takenInRound < maxImplementationAttempts &&
-          last.outcome !== null &&
-          isRepairable(last.outcome)
-
         const id = newId()
         const row: AttemptRow = {
           id,
           jobId: input.jobId,
-          round: continues ? openRound : openRound + 1,
-          attempt: continues ? last.attempt + 1 : 1,
           codexSessionId: input.sessionId,
           startedAt: now,
           endedAt: null,
           outcome: null,
-          report: null,
           failureReason: null,
           logPath: attemptLogPathFor(input.logRoot, input.jobId, id),
         }
@@ -1503,7 +1490,6 @@ export function createStore(options: CreateStoreOptions): Store {
           endedAt: current.endedAt ?? now,
           failureReason: input.failureReason,
           outcome: input.outcome,
-          report: input.report === null ? null : JSON.stringify(input.report),
         }
 
         tx.update(implementationAttempts)
@@ -1554,27 +1540,9 @@ export function createStore(options: CreateStoreOptions): Store {
         .select()
         .from(implementationAttempts)
         .where(eq(implementationAttempts.jobId, jobId))
-        .orderBy(
-          asc(implementationAttempts.round),
-          asc(implementationAttempts.attempt),
-        )
+        .orderBy(asc(implementationAttempts.startedAt))
         .all()
         .map(toAttempt)
-    },
-
-    latestAttempt(jobId) {
-      const row = database
-        .select()
-        .from(implementationAttempts)
-        .where(eq(implementationAttempts.jobId, jobId))
-        .orderBy(
-          desc(implementationAttempts.round),
-          desc(implementationAttempts.attempt),
-        )
-        .limit(1)
-        .get()
-
-      return row === undefined ? undefined : toAttempt(row)
     },
 
     listMilestones(jobId) {
@@ -1614,7 +1582,7 @@ export function createStore(options: CreateStoreOptions): Store {
           .where(eq(jobs.id, input.jobId))
           .run()
 
-        return applyTransition(
+        const job = applyTransition(
           tx,
           {
             actor: 'system',
@@ -1626,23 +1594,84 @@ export function createStore(options: CreateStoreOptions): Store {
           now,
           events,
         )
+
+        // The pull request is what the item was waiting for.
+        resolveItems(
+          tx,
+          openItemsOfKinds(tx, input.jobId, [handlerInputKind]),
+          now,
+          events,
+        )
+
+        return job
       })
     },
 
-    failImplementation(input) {
-      return commit((tx, events, now) =>
-        suspendInPlace(
+    requestHandlerInput(input) {
+      commit((tx, events, now) => {
+        readJob(tx, input.jobId)
+        raiseItem(
           tx,
-          readJob(tx, input.jobId),
+          openItemsOfKinds(tx, input.jobId, [handlerInputKind]),
           {
             body: input.body,
-            rule: implementationFailure,
-            suspension: 'stoppedBySystem',
+            jobId: input.jobId,
+            rule: { kind: handlerInputKind, title: input.title },
           },
           now,
           events,
-        ),
-      )
+        )
+      })
+    },
+
+    resolveHandlerInput(jobId) {
+      commit((tx, events, now) => {
+        resolveItems(
+          tx,
+          openItemsOfKinds(tx, jobId, [handlerInputKind]),
+          now,
+          events,
+        )
+      })
+    },
+
+    startPass(input) {
+      return commit((tx, events, now) => {
+        // Set before the move, so the transition reads a job that already
+        // holds its Slot and announces both at once.
+        tx.update(jobs)
+          .set({ codexPass: input.kind, updatedAt: now })
+          .where(eq(jobs.id, input.jobId))
+          .run()
+
+        return applyTransition(
+          tx,
+          {
+            actor: 'system',
+            expectedState: input.from,
+            jobId: input.jobId,
+            to: input.to,
+          },
+          now,
+          events,
+        )
+      })
+    },
+
+    endPass(jobId) {
+      commit((tx, events, now) => {
+        const current = readJob(tx, jobId)
+        if (current.codexPass === null) return
+
+        tx.update(jobs)
+          .set({ codexPass: null, updatedAt: now })
+          .where(eq(jobs.id, jobId))
+          .run()
+
+        events.push(
+          jobChanged(toJob({ ...current, codexPass: null, updatedAt: now })),
+        )
+      })
     },
 
     startCodexProcess(input) {
@@ -1965,6 +1994,8 @@ export function createStore(options: CreateStoreOptions): Store {
           worktreePath: null,
           codexSessionId: null,
           originalPrUrl: null,
+          hold: null,
+          codexPass: null,
           createdAt: now,
           updatedAt: now,
         }

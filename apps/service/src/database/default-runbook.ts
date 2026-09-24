@@ -9,8 +9,8 @@
  */
 export const defaultRunbookContent = `# Implementation runbook
 
-Follow the approved plan. It is the description of the work; this is the
-procedure for doing it.
+Follow the plan the Handler approved in this session. It is the description
+of the work; this is the procedure for doing it.
 
 ## Before you start
 
@@ -24,8 +24,7 @@ procedure for doing it.
 - Implement the plan with the \`/implement\` skill. Invoke it and let it carry
   out the plan; do not hand-edit your way through the steps instead. If this
   environment has no such skill, work the steps yourself and say so.
-- Work through the plan's steps in order. A step marked required has to pass;
-  an optional step may be abandoned if it turns out to be wrong.
+- Work through the plan's steps in order.
 - Match the surrounding code: its naming, its comment density, its idioms. A
   change that reads as though it were always there is the goal.
 - If the plan turns out to be wrong — a file is not what it claimed, a step is

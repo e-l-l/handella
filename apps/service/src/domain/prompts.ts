@@ -80,26 +80,6 @@ export const implementationPrompt = (brief: ImplementationBrief): string =>
     `${brief.job.baseBranch}. Stay on it. The pull request targets ${brief.job.baseBranch}`,
     'and is opened ready for review, not as a draft.',
     '',
-    'Reply with JSON matching the schema you were given, and nothing else.',
-  ].join('\n')
-
-/**
- * A repair turn carries almost nothing: it resumes the session that already
- * holds the plan and the runbook, and restating them invites the agent to
- * start the work again rather than finish it. It is not told how much budget
- * is left — an agent told it is on its last attempt takes shortcuts.
- */
-export const repairPrompt = (unresolved: readonly string[]): string =>
-  [
-    'The previous turn did not finish.',
-    '',
-    ...(unresolved.length > 0
-      ? ['Still unresolved:', '', ...unresolved.map((item) => `- ${item}`), '']
-      : []),
-    'This worktree may hold partial, uncommitted work from that turn. Read',
-    '`git status` and the diff before you continue, rather than starting over.',
-    '',
-    'Finish the work, then complete the remaining steps of the runbook,',
-    'including opening the pull request. Reply with JSON matching the schema',
-    'you were given, and nothing else.',
+    'When the pull request is open, say so and stop. If you cannot finish, say',
+    'what is left and stop: the Handler picks this session up from here.',
   ].join('\n')

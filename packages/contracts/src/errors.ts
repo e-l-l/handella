@@ -30,7 +30,6 @@ export const apiErrorCodes = [
   'codex_unavailable',
   'codex_planning_failed',
   'codex_session_missing',
-  'implementation_report_invalid',
   'attempt_not_found',
   'github_unavailable',
   'github_not_authenticated',

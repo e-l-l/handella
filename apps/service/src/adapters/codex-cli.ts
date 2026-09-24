@@ -1,11 +1,7 @@
 import { spawn } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import {
-  ImplementationReportSchema,
   codexIdleMs,
   codexTerminationGraceMs,
   implementationTimeoutMs,
@@ -13,13 +9,7 @@ import {
 } from '@handella/contracts'
 
 import { codexPlanningFailed, codexUnavailable } from '../domain/errors.js'
-import { DomainError } from '../domain/errors.js'
-import { parseImplementationReport } from '../domain/implementation-report.js'
-import {
-  implementationPrompt,
-  planningPrompt,
-  repairPrompt,
-} from '../domain/prompts.js'
+import { implementationPrompt, planningPrompt } from '../domain/prompts.js'
 import type { Redactor } from '../domain/redact.js'
 import { commandEnv, onPath } from './command.js'
 import { signalProcessGroup } from './processes-ps.js'
@@ -430,19 +420,6 @@ const runPass = (request: PassRequest): Promise<PassEnding> =>
     child.stdin.end(request.prompt)
   })
 
-/** A scratch directory whose files are readable only by this account. */
-const withScratch = async <Result>(
-  prefix: string,
-  body: (directory: string) => Promise<Result>,
-): Promise<Result> => {
-  const directory = mkdtempSync(join(tmpdir(), prefix))
-  try {
-    return await body(directory)
-  } finally {
-    rmSync(directory, { force: true, recursive: true })
-  }
-}
-
 export const createCodexAdapter = (
   options: CodexAdapterOptions,
 ): CodexAdapter => ({
@@ -454,88 +431,43 @@ export const createCodexAdapter = (
   },
 
   async implement(input: ImplementationRequest): Promise<ImplementationResult> {
-    return withScratch('handella-implement-', async (directory) => {
-      const schemaPath = join(directory, 'report-schema.json')
-      const messagePath = join(directory, 'report.json')
-      writeFileSync(schemaPath, JSON.stringify(ImplementationReportSchema), {
-        mode: 0o600,
-      })
-
-      // Always a resume: implementation happens in the session that planned.
-      // `resume` takes no `--cd`, so the cwd is what pins the worktree, and it
-      // is also what `workspace-write` confines writes to.
-      const ending = await runPass({
-        args: [
-          'exec',
-          'resume',
-          input.sessionId,
-          ...sharedOverrides,
-          '--json',
-          '--output-schema',
-          schemaPath,
-          '--output-last-message',
-          messagePath,
-          '-',
-        ],
-        cwd: input.worktreePath,
-        label: 'Implementation',
-        onLine: input.onLine,
-        onMilestone: input.onMilestone,
-        onSpawn: input.onSpawn,
-        prompt:
-          input.attempt > 1 || input.round > 1
-            ? repairPrompt(input.unresolved)
-            : implementationPrompt(input),
-        redact: options.redact,
-        signal: input.signal,
-        timeoutMs: implementationTimeoutMs,
-      })
-
-      const failed = (
-        reason: string,
-        as: ImplementationResult['outcome'] = 'failed',
-      ): ImplementationResult => ({
-        failureReason: options.redact(reason),
-        outcome: as,
-        report: null,
-      })
-
-      if (!ending.ok) {
-        return ending.kind === 'failed'
-          ? failed(`Codex could not implement: ${ending.reason}`)
-          : failed(ending.reason, ending.kind)
-      }
-
-      let message: string
-      try {
-        message = readFileSync(messagePath, 'utf8')
-      } catch {
-        return failed('Codex finished without writing a completion report')
-      }
-
-      // An unusable report is a turn that did not finish, not a broken
-      // Handella: the repair cycle is exactly the right answer to it.
-      let report
-      try {
-        report = parseImplementationReport(
-          options.redact(message),
-          "Codex's completion report",
-        )
-      } catch (error) {
-        return failed(
-          error instanceof DomainError
-            ? error.message
-            : 'The completion report could not be read',
-        )
-      }
-
-      return {
-        failureReason: null,
-        outcome:
-          report.outcome === 'blocked' ? 'reportedBlocked' : 'reportedDone',
-        report,
-      }
+    // Always a resume: implementation happens in the session that planned.
+    // `resume` takes no `--cd`, so the cwd is what pins the worktree, and it
+    // is also what a `workspace-write` sandbox confines writes to. No output
+    // schema: the turn's ending is a record, not a verdict, and what it
+    // achieved is asked of GitHub afterwards (docs/adr/0015).
+    const ending = await runPass({
+      args: [
+        'exec',
+        'resume',
+        input.sessionId,
+        ...sharedOverrides,
+        '--json',
+        '-',
+      ],
+      cwd: input.worktreePath,
+      label: 'Implementation',
+      onLine: input.onLine,
+      onMilestone: input.onMilestone,
+      onSpawn: input.onSpawn,
+      prompt: implementationPrompt(input),
+      redact: options.redact,
+      signal: input.signal,
+      timeoutMs: implementationTimeoutMs,
     })
+
+    if (!ending.ok) {
+      return {
+        failureReason: options.redact(
+          ending.kind === 'failed'
+            ? `Codex could not implement: ${ending.reason}`
+            : ending.reason,
+        ),
+        outcome: ending.kind,
+      }
+    }
+
+    return { failureReason: null, outcome: 'finished' }
   },
 
   async plan(input: PlanningRequest): Promise<PlanningResult> {

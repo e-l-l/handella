@@ -2,10 +2,12 @@ import {
   attemptOutcomes,
   attentionItemKinds,
   codexPassKinds,
+  jobHolds,
   jobSources,
   jobStates,
   jobSuspensions,
   milestoneKinds,
+  sessionWatchStatuses,
   settledJobStates,
   transitionActors,
   workClasses,
@@ -101,6 +103,15 @@ export const jobs = sqliteTable(
     workClass: text('work_class', { enum: workClasses }).notNull(),
     state: text('state', { enum: jobStates }).notNull(),
     suspension: text('suspension', { enum: jobSuspensions }),
+    /**
+     * Enumerated in TypeScript only, with no CHECK, unlike every other column
+     * here: a CHECK added to this table recreates it, and inside the
+     * migrator's single transaction `PRAGMA foreign_keys=OFF` is a no-op, so
+     * the DROP behind the recreate cascades through every child table. The
+     * store is the only writer and writes the contracts tuple.
+     */
+    hold: text('hold', { enum: jobHolds }),
+    codexPass: text('codex_pass', { enum: codexPassKinds }),
     linearIssueKey: text('linear_issue_key'),
     linearIssueId: text('linear_issue_id'),
     linearIssueUrl: text('linear_issue_url'),
@@ -261,22 +272,16 @@ export const runbookSnapshots = sqliteTable(
 )
 
 /**
- * One turn of implementation Codex took on a Job.
+ * One turn of implementation Codex took on a Job, spawned by Handella.
  *
- * Rows are how the bound on autonomous repair is counted: the next turn runs
- * only while there are fewer than three since the Handler last resumed the Job.
- * A counter column would record the number without recording what any of the
- * turns did, and an `implementing -> implementing` edge would put repair
- * mechanics into the table ADR 0003 keeps as a statement about a Job's life.
- * Rows carry both, and the milestones and the log hang off them.
+ * Ordinarily one per Job. The bound on autonomous repair that these rows used
+ * to count is gone: a turn that ends without a pull request hands the Job to
+ * the Handler's terminal rather than to another turn (docs/adr/0015), so a
+ * second row appears only when the Handler sends a Job back through the queue
+ * and approves it again. The milestones and the log hang off the row.
  *
  * `outcome` and `ended_at` are null exactly while the turn is still running, so
  * a row with a null `ended_at` after a restart is a turn that was interrupted.
- *
- * A round is what makes the budget resettable without a column on the job: a
- * turn joins the open round while that round has turns left and its last one
- * ended in a way Handella may answer by itself, and otherwise opens a new one —
- * which only a Handler resume can reach.
  */
 export const implementationAttempts = sqliteTable(
   'implementation_attempts',
@@ -285,14 +290,10 @@ export const implementationAttempts = sqliteTable(
     jobId: text('job_id')
       .notNull()
       .references(() => jobs.id, { onDelete: 'cascade' }),
-    round: integer('round').notNull(),
-    attempt: integer('attempt').notNull(),
     codexSessionId: text('codex_session_id').notNull(),
     startedAt: integer('started_at', { mode: 'timestamp_ms' }).notNull(),
     endedAt: integer('ended_at', { mode: 'timestamp_ms' }),
     outcome: text('outcome', { enum: attemptOutcomes }),
-    /** The completion report as JSON, already redacted, or null. */
-    report: text('report'),
     failureReason: text('failure_reason'),
     /**
      * Where this turn's raw stream was written. A path rather than the bytes:
@@ -303,16 +304,14 @@ export const implementationAttempts = sqliteTable(
     logPath: text('log_path').notNull(),
   },
   (table) => [
-    check('implementation_attempts_attempt_check', sql`${table.attempt} >= 1`),
-    check('implementation_attempts_round_check', sql`${table.round} >= 1`),
     check(
       'implementation_attempts_outcome_check',
       nullOrOneOf(table.outcome, attemptOutcomes),
     ),
-    uniqueIndex('implementation_attempts_job_id_round_attempt_unique').on(
+    /** What `listAttempts` reads by and orders by; SQLite indexes no foreign key on its own. */
+    index('implementation_attempts_job_id_started_at_idx').on(
       table.jobId,
-      table.round,
-      table.attempt,
+      table.startedAt,
     ),
   ],
 )
@@ -430,5 +429,41 @@ export const codexProcesses = sqliteTable(
     index('codex_processes_live_idx')
       .on(table.startedAt)
       .where(sql`${table.endedAt} is null`),
+  ],
+)
+
+/**
+ * Where Session Watch stands on a Job's Codex session (docs/adr/0015).
+ *
+ * Its own table rather than columns on `jobs`, because `byte_offset` is
+ * written every few seconds while a session is followed, and every write to a
+ * Job's row bumps `updated_at` and publishes a `job.changed` that every open
+ * dashboard refetches on. One row per Job, so the Job's id is the key.
+ *
+ * `rollout_path` is null until the file has been found. `missing_since` is set
+ * on the first pass that could not find it and cleared when it reappears;
+ * `status` turns to `lost` once it has been missing for the grace period.
+ * `last_turn_id` is the turn the last "needs you" item was raised for, so an
+ * idle session raises one item rather than one per pass.
+ */
+export const sessionWatches = sqliteTable(
+  'session_watches',
+  {
+    jobId: text('job_id')
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    status: text('status', { enum: sessionWatchStatuses }).notNull(),
+    rolloutPath: text('rollout_path'),
+    byteOffset: integer('byte_offset').notNull().default(0),
+    lastTurnId: text('last_turn_id'),
+    missingSince: integer('missing_since', { mode: 'timestamp_ms' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (table) => [
+    check(
+      'session_watches_status_check',
+      oneOf(table.status, sessionWatchStatuses),
+    ),
   ],
 )

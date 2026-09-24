@@ -11,11 +11,7 @@ import type {
   MilestoneInput,
 } from '../src/adapters/codex.js'
 import { createRedactor } from '../src/domain/redact.js'
-import {
-  aTemporaryDirectory,
-  cleanupTestContexts,
-  aLinearIssue,
-} from './helpers.js'
+import { aTemporaryDirectory, cleanupTestContexts } from './helpers.js'
 
 const originalPath = process.env.PATH
 
@@ -105,8 +101,6 @@ const aRequest = (
   const pids: number[] = []
 
   return {
-    attempt: 1,
-    issue: aLinearIssue({ identifier: 'ENG-142' }),
     job: {
       baseBranch: 'dev',
       canonicalBranch: 'ell/eng-142',
@@ -117,32 +111,20 @@ const aRequest = (
     onLine: (text) => lines.push(text),
     onMilestone: (milestone) => milestones.push(milestone),
     onSpawn: (pid) => pids.push(pid),
-    round: 1,
     runbook: '# runbook',
     sessionId: 'session-7',
     signal: new AbortController().signal,
-    unresolved: [],
     worktreePath: aTemporaryDirectory('handella-worktree-'),
     ...overrides,
   }
 }
 
-const aReportBody = (report: Record<string, unknown>): string =>
-  `printf '%s' ${JSON.stringify(JSON.stringify(report))} > "$out"`
-
-const completedReport = {
-  outcome: 'completed',
-  summary: 'Done.',
-  committed: true,
-  pullRequestUrl: 'https://github.com/acme/monorepo/pull/41',
-  checks: [{ command: 'npm test', passed: true, note: '' }],
-  unresolved: [],
-  planDeviations: [],
-}
+/** A turn that ends on its own terms, saying so the way Codex does. */
+const finishes = `printf '%s\\n' '{"type":"turn.completed"}'`
 
 describe('the implementation pass', () => {
   it('resumes the session under the Handler’s own sandbox, approvals off and network on', async () => {
-    const stub = aStubCodex(aReportBody(completedReport))
+    const stub = aStubCodex(finishes)
     const codex = await anAdapter(stub.directory)
 
     await codex.implement(aRequest())
@@ -155,6 +137,10 @@ describe('the implementation pass', () => {
     expect(argv).toContain('sandbox_workspace_write.network_access=true')
     expect(argv).toContain('approval_policy="never"')
     expect(argv).toContain('notify=[]')
+    // No schema and no last-message file: the turn's ending is a record, and
+    // what it achieved is asked of GitHub rather than of the agent.
+    expect(argv).not.toContain('--output-schema')
+    expect(argv).not.toContain('--output-last-message')
     // The prompt is stdin, never an argument: an issue description must not
     // reach a process listing.
     expect(argv).toContain('-')
@@ -168,7 +154,7 @@ describe('the implementation pass', () => {
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"Two suites fail."}}'`,
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"i3","type":"reasoning","text":"I should look at the parser."}}'`,
         `printf '%s\\n' 'not json at all'`,
-        aReportBody(completedReport),
+        finishes,
       ].join('\n'),
     )
     const codex = await anAdapter(stub.directory)
@@ -190,9 +176,10 @@ describe('the implementation pass', () => {
         summary: 'Two suites fail.',
       },
     ])
-    // Every line reaches the log, including the ones the spine ignores.
-    expect(request.lines).toHaveLength(5)
-    expect(result.outcome).toBe('reportedDone')
+    // Every line reaches the log, including the ones the spine ignores and
+    // the one that says the turn is over.
+    expect(request.lines).toHaveLength(6)
+    expect(result.outcome).toBe('finished')
   })
 
   it('redacts a secret before anything downstream can see it', async () => {
@@ -200,38 +187,18 @@ describe('the implementation pass', () => {
     const stub = aStubCodex(
       [
         `printf '%s\\n' '{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"curl -H auth:${secret}","aggregated_output":"${secret} rejected","exit_code":1,"status":"completed"}}'`,
-        aReportBody({ ...completedReport, summary: `used ${secret}` }),
+        `printf '%s\\n' '{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"used ${secret}"}}'`,
       ].join('\n'),
     )
     const codex = await anAdapter(stub.directory, [secret])
     const request = aRequest()
 
-    const result = await codex.implement(request)
+    await codex.implement(request)
 
     expect(request.lines.join('\n')).not.toContain(secret)
     expect(request.milestones[0]?.summary).not.toContain(secret)
     expect(request.milestones[0]?.detail).not.toContain(secret)
-    expect(result.report?.summary).toBe('used [redacted]')
-  })
-
-  it('reads a blocked report as the ending it is', async () => {
-    const stub = aStubCodex(
-      aReportBody({
-        ...completedReport,
-        outcome: 'blocked',
-        committed: false,
-        pullRequestUrl: '',
-        planDeviations: ['src/date.ts does not exist'],
-      }),
-    )
-    const codex = await anAdapter(stub.directory)
-
-    const result = await codex.implement(aRequest())
-
-    expect(result.outcome).toBe('reportedBlocked')
-    expect(result.report?.planDeviations).toEqual([
-      'src/date.ts does not exist',
-    ])
+    expect(request.milestones[1]?.summary).toBe('used [redacted]')
   })
 
   it('calls a non-zero exit a failure rather than throwing', async () => {
@@ -242,17 +209,6 @@ describe('the implementation pass', () => {
 
     expect(result.outcome).toBe('failed')
     expect(result.failureReason).toContain('exited with 3')
-    expect(result.report).toBeNull()
-  })
-
-  it('calls a report it cannot read a failure, so the turn can be repaired', async () => {
-    const stub = aStubCodex(`printf '%s' '{"outcome":"maybe"}' > "$out"`)
-    const codex = await anAdapter(stub.directory)
-
-    const result = await codex.implement(aRequest())
-
-    expect(result.outcome).toBe('failed')
-    expect(result.failureReason).toContain('report schema')
   })
 
   it('stops a turn that has gone silent', async () => {
@@ -287,7 +243,7 @@ describe('the implementation pass', () => {
   })
 
   it('reports the pid of the process it started', async () => {
-    const stub = aStubCodex(aReportBody(completedReport))
+    const stub = aStubCodex(finishes)
     const codex = await anAdapter(stub.directory)
     const request = aRequest()
 

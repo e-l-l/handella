@@ -5,10 +5,10 @@ import { useState } from 'react'
 
 import { fetchAttemptLog, jobKeys } from '../api/jobs.ts'
 import {
-  attemptLabel,
   attemptOutcomeLabel,
   formatDuration,
   formatTimestamp,
+  turnLabel,
 } from '../labels.ts'
 import { emptyPanelClass, quietButtonClass } from '../styles.ts'
 
@@ -116,7 +116,7 @@ export function JobLogs({
           >
             <div className="flex flex-wrap items-center gap-3">
               <p className="text-[14px] font-medium">
-                {attemptLabel(attempt, 'Attempt')}
+                {turnLabel(attempts.indexOf(attempt) + 1, attempts.length)}
               </p>
               <p className="font-mono text-[11px] text-ink-4">
                 {attemptOutcomeLabel(attempt)}

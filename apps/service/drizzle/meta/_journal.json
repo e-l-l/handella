@@ -50,6 +50,20 @@
       "when": 1789987837381,
       "tag": "0006_groovy_blink",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1790196327157,
+      "tag": "0007_simplify_delegation",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1790196343429,
+      "tag": "0008_session_watches",
+      "breakpoints": true
     }
   ]
 }

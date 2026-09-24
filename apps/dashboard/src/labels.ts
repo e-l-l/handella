@@ -1,5 +1,3 @@
-import { maxImplementationAttempts } from '@handella/contracts'
-
 import type {
   Attempt,
   AttemptOutcome,
@@ -149,8 +147,7 @@ export const elidePath = (path: string, width = 34): string => {
 }
 
 const attemptOutcomeLabels: Record<AttemptOutcome, string> = {
-  reportedDone: 'reported done',
-  reportedBlocked: 'plan was wrong',
+  finished: 'finished',
   failed: 'failed',
   timedOut: 'timed out',
   stopped: 'stopped',
@@ -162,14 +159,12 @@ export const attemptOutcomeLabel = (attempt: Attempt): string =>
   attempt.outcome === null ? 'running' : attemptOutcomeLabels[attempt.outcome]
 
 /**
- * Which turn this is, and its round once a Handler resume has started another.
- * `noun` because the job page starts a line with it and the inbox continues
- * one; only the capital differs, and it is not worth two spellings of the rest.
+ * Which turn this is. Ordinarily there is one — Handella takes a single turn
+ * and hands the session to the Handler — so the count is only spelled out
+ * once a job has been sent back through the queue and approved again.
  */
-export const attemptLabel = (attempt: Attempt, noun = 'attempt'): string =>
-  `${noun} ${attempt.attempt} of ${maxImplementationAttempts}${
-    attempt.round > 1 ? ` · round ${attempt.round}` : ''
-  }`
+export const turnLabel = (ordinal: number, total: number): string =>
+  total <= 1 ? 'Codex turn' : `Turn ${ordinal} of ${total}`
 
 export const milestoneKindLabels: Record<MilestoneKind, string> = {
   command: 'ran',

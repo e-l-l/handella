@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   availableSlots,
   isAwaitingMerge,
+  isInFlight,
   isQueued,
   isRunning,
   maxConcurrency,
@@ -19,6 +20,8 @@ const baseJob: Job = {
   workClass: 'routine',
   state: 'queued',
   suspension: null,
+  hold: null,
+  codexPass: null,
   linearIssueKey: 'ENG-412',
   linearIssueId: 'b2b9e5a6-0f1e-4c6b-9a3f-2b1c4d5e6f70',
   linearIssueUrl: 'https://linear.app/acme/issue/ENG-412',
@@ -44,45 +47,81 @@ const inState = (
 ): Job => aJob({ id, state, suspension })
 
 describe('slot accounting', () => {
-  it('counts planning and implementing as holding a slot', () => {
-    expect(isRunning(inState('a', 'planning'))).toBe(true)
-    expect(isRunning(inState('b', 'implementing'))).toBe(true)
+  it('counts a job with a Handella pass behind it', () => {
+    expect(
+      isRunning(aJob({ id: 'a', state: 'planning', codexPass: 'plan' })),
+    ).toBe(true)
+    expect(
+      isRunning(
+        aJob({ id: 'b', state: 'implementing', codexPass: 'implement' }),
+      ),
+    ).toBe(true)
   })
 
-  it('does not count a job that has not started or has finished', () => {
-    for (const state of [
-      'intake',
-      'queued',
-      'planReview',
-      'approved',
-      'prOpen',
-      'merged',
-    ] as const) {
-      expect(isRunning(inState('a', state))).toBe(false)
-    }
+  it('does not count a job the Handler is driving from their terminal', () => {
+    // Implementing, and nothing of Handella's is running in it: the Handler
+    // told Codex to go in the session, and the machine they occupy is theirs.
+    expect(isRunning(inState('a', 'implementing'))).toBe(false)
+    expect(isRunning(inState('a', 'planning'))).toBe(false)
   })
 
-  it('frees the slot of a suspended job, because nothing is working in its worktree', () => {
-    expect(isRunning(inState('a', 'planning', 'stoppedByHandler'))).toBe(false)
-    expect(isRunning(inState('a', 'implementing', 'interrupted'))).toBe(false)
+  it('frees the slot of a suspended job, because its pass is aborted', () => {
+    expect(
+      isRunning(
+        aJob({
+          id: 'a',
+          state: 'planning',
+          codexPass: 'plan',
+          suspension: 'stoppedByHandler',
+        }),
+      ),
+    ).toBe(false)
   })
 
   it('offers three slots when nothing is running and none when three are', () => {
     expect(availableSlots([])).toBe(maxConcurrency)
     expect(
       availableSlots([
-        inState('a', 'planning'),
-        inState('b', 'planning'),
-        inState('c', 'implementing'),
+        aJob({ id: 'a', state: 'planning', codexPass: 'plan' }),
+        aJob({ id: 'b', state: 'planning', codexPass: 'plan' }),
+        aJob({ id: 'c', state: 'implementing', codexPass: 'implement' }),
       ]),
     ).toBe(0)
   })
 
   it('never reports a negative number of slots', () => {
     const running = Array.from({ length: maxConcurrency + 2 }, (_, index) =>
-      inState(String(index), 'implementing'),
+      aJob({
+        id: String(index),
+        state: 'implementing',
+        codexPass: 'implement',
+      }),
     )
     expect(availableSlots(running)).toBe(0)
+  })
+})
+
+describe('work in flight', () => {
+  it('counts planning and implementing, whoever is driving', () => {
+    expect(isInFlight(inState('a', 'planning'))).toBe(true)
+    expect(isInFlight(inState('b', 'implementing'))).toBe(true)
+    expect(
+      isInFlight(
+        aJob({ id: 'c', state: 'implementing', codexPass: 'implement' }),
+      ),
+    ).toBe(true)
+  })
+
+  it('counts nothing that is waiting, finished or stopped', () => {
+    for (const state of [
+      'queued',
+      'planReview',
+      'approved',
+      'prOpen',
+    ] as const) {
+      expect(isInFlight(inState('a', state))).toBe(false)
+    }
+    expect(isInFlight(inState('a', 'implementing', 'interrupted'))).toBe(false)
   })
 })
 

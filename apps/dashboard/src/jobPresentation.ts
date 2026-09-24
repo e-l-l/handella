@@ -1,5 +1,5 @@
 import {
-  isRunning,
+  isInFlight,
   isTerminalJobState,
   type Job,
   type JobState,
@@ -183,7 +183,7 @@ export const jobAction = (job: Job): JobActionKind => {
   if (job.state === 'intake') return 'dispatch'
   if (job.state === 'planReview') return 'reviewPlan'
   if (job.state === 'prOpen' || job.state === 'reviewing') return 'reviewPr'
-  if (isRunning(job)) return 'openSession'
+  if (isInFlight(job)) return 'openSession'
   if (isTerminalJobState(job.state) || job.state === 'merged') return 'view'
   return 'open'
 }

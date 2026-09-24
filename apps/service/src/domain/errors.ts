@@ -255,17 +255,6 @@ export const codexSessionMissing = (jobId: string): DomainError =>
     `Job ${jobId} has no Codex session to implement in`,
   )
 
-/**
- * Codex answered with something the report schema rejects, despite having been
- * given that schema. Upstream, not a bug here — the same class of failure as a
- * non-zero exit, and it takes the same path.
- */
-export const implementationReportInvalid = (
-  message: string,
-  cause?: unknown,
-): DomainError =>
-  new DomainError('implementation_report_invalid', 502, message, { cause })
-
 export const attemptNotFound = (attemptId: string): DomainError =>
   new DomainError('attempt_not_found', 404, `No attempt with id ${attemptId}`)
 

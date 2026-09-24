@@ -18,8 +18,8 @@ import type { JobActionTarget } from '../hooks/useJobControls.ts'
 import { useJobs } from '../hooks/useJobs.ts'
 import {
   availableSlots,
+  isInFlight,
   isQueued,
-  isRunning,
   maxConcurrency,
 } from '../jobViews.ts'
 import { capacityConsequence, formatAge, issueKeyLabel } from '../labels.ts'
@@ -57,6 +57,7 @@ const severities: Record<AttentionItemKind, Severity> = {
   readyPr: 'review',
   failure: 'blocker',
   orphanWorktree: 'housekeeping',
+  handlerInput: 'review',
 }
 
 /** The rail, the card's border tint, and the tone its status tag wears. */
@@ -86,6 +87,7 @@ const kindTags: Record<AttentionItemKind, string> = {
   readyPr: 'pr ready',
   failure: 'failed',
   orphanWorktree: 'orphans',
+  handlerInput: 'needs you',
 }
 
 /**
@@ -106,6 +108,8 @@ const kindConsequences: Record<AttentionItemKind, string> = {
   failure: 'The branch, worktree, session and logs are all kept.',
   orphanWorktree:
     'Handella reports these directories and never deletes them. Removing one is yours to do.',
+  handlerInput:
+    'Handella handed this job to your terminal. Open the session and continue there; the job moves on when the pull request is open.',
 }
 
 /**
@@ -395,7 +399,9 @@ export function AttentionInboxPage() {
       byId: new Map(allJobs.map((job) => [job.id, job])),
       freeSlots: availableSlots(allJobs),
       queued: allJobs.filter(isQueued).length,
-      running: allJobs.filter(isRunning),
+      // In flight, whoever is driving: a job the Handler took over in their
+      // terminal is still working, though it holds no slot.
+      running: allJobs.filter(isInFlight),
       suspended: allJobs.filter((job) => job.suspension !== null).length,
     }
   }, [jobs.data])

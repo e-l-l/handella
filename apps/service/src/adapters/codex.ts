@@ -1,6 +1,5 @@
 import type {
   AttemptOutcome,
-  ImplementationReport,
   Job,
   LinearIssueSummary,
   MilestoneKind,
@@ -74,12 +73,12 @@ export interface MilestoneInput {
   summary: string
 }
 
+/**
+ * The one turn that follows an approval. It carries no issue and no plan: both
+ * are already in the session it resumes, and restating them invites the agent
+ * to start over rather than build.
+ */
 export interface ImplementationRequest {
-  /** Which turn of this round, 1 for the first and 2 or 3 for a repair. */
-  attempt: number
-  /** Which run of the budget. Above 1 only after the Handler resumed the job. */
-  round: number
-  issue: LinearIssueSummary
   job: Job
   /**
    * Every line Codex wrote, already redacted, in the order it wrote it. The
@@ -103,22 +102,19 @@ export interface ImplementationRequest {
   /** Always set: implementation happens in the session that planned. */
   sessionId: string
   signal: AbortSignal
-  /**
-   * What the previous turn left broken, and the whole of a repair turn's brief.
-   * Empty on the first attempt.
-   */
-  unresolved: readonly string[]
   /** Codex writes here, and nowhere else. */
   worktreePath: string
 }
 
 /**
- * How the turn ended, in the Attempt's own vocabulary.
+ * How the turn ended, in the Attempt's own vocabulary — and nothing about what
+ * it achieved. `finished` says the turn ended on its own; whether a pull
+ * request exists is asked of GitHub, never of the agent (docs/adr/0015).
  *
  * `implement` resolves for every ending a turn can reach, including the ones
- * that went badly, because each is something the scheduler does a different
- * thing about. It rejects only when Codex could not be run at all, which is not
- * an ending but an absence.
+ * that went badly, because each is something the scheduler records. It
+ * rejects only when Codex could not be run at all, which is not an ending but
+ * an absence.
  *
  * `interrupted` is excluded: only a restart can decide a turn was interrupted,
  * and by then nothing is here to say so.
@@ -126,7 +122,6 @@ export interface ImplementationRequest {
 export interface ImplementationResult {
   failureReason: string | null
   outcome: Exclude<AttemptOutcome, 'interrupted'>
-  report: ImplementationReport | null
 }
 
 /** The two passes Handella asks Codex to take, and nothing else. */

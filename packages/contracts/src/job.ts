@@ -1,5 +1,6 @@
 import { Type, type Static } from 'typebox'
 
+import { codexPassKinds } from './codex-process.js'
 import { LinearIdSchema } from './linear.js'
 import {
   IsoDateTimeSchema,
@@ -46,6 +47,17 @@ export const jobSuspensions = [
 export type JobSuspension = (typeof jobSuspensions)[number]
 
 export const JobSuspensionSchema = literalUnion(jobSuspensions)
+
+/**
+ * Why a Job in `planning` has no pass behind it: Handella will not plan it
+ * unattended and is waiting for the Handler to open the session. Not a
+ * Suspension — nothing stopped — and it holds no Slot (docs/adr/0017).
+ */
+export const jobHolds = ['handlerPlanning'] as const
+
+export type JobHold = (typeof jobHolds)[number]
+
+export const JobHoldSchema = literalUnion(jobHolds)
 
 export const jobSources = ['linear', 'slack', 'adhoc'] as const
 
@@ -98,6 +110,14 @@ export const JobSchema = Type.Object(
     workClass: WorkClassSchema,
     state: JobStateSchema,
     suspension: Nullable(JobSuspensionSchema),
+    hold: Nullable(JobHoldSchema),
+    /**
+     * The Handella pass currently claiming this Job's Slot, or null. A Slot is
+     * a fact about a pass rather than about a Lifecycle State: a Job the
+     * Handler is driving from their terminal is `implementing` and holds none
+     * (docs/adr/0015).
+     */
+    codexPass: Nullable(literalUnion(codexPassKinds)),
     linearIssueKey: Nullable(LinearIdSchema),
     /**
      * Linear's own id for the issue, and the authoritative link. The

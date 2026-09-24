@@ -23,6 +23,8 @@ const validJob = {
   workClass: 'routine',
   state: 'intake',
   suspension: null,
+  hold: null,
+  codexPass: null,
   linearIssueKey: null,
   linearIssueId: null,
   linearIssueUrl: null,

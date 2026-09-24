@@ -41,6 +41,8 @@ export const aJob = (overrides: Partial<Job> = {}): Job => ({
   workClass: 'routine',
   state: 'intake',
   suspension: null,
+  hold: null,
+  codexPass: null,
   linearIssueKey: null,
   linearIssueId: null,
   linearIssueUrl: null,
@@ -59,13 +61,10 @@ export const aJob = (overrides: Partial<Job> = {}): Job => ({
 export const anAttempt = (overrides: Partial<Attempt> = {}): Attempt => ({
   id: 'aaaaaaaa-e89b-42d3-a456-426614174000',
   jobId: '123e4567-e89b-42d3-a456-426614174000',
-  round: 1,
-  attempt: 1,
   codexSessionId: 'session-1',
   startedAt: '2026-09-18T10:05:00.000Z',
   endedAt: null,
   outcome: null,
-  report: null,
   failureReason: null,
   ...overrides,
 })

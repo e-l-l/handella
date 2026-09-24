@@ -4,9 +4,7 @@ import { dirname } from 'node:path'
 import {
   availableSlots,
   isImplementable,
-  isRepairable,
   isStartable,
-  maxImplementationAttempts,
   orderQueue,
   type Attempt,
   type CodexPassKind,
@@ -15,7 +13,7 @@ import {
   type StartableJob,
 } from '@handella/contracts'
 
-import type { CodexAdapter, ImplementationResult } from '../adapters/codex.js'
+import type { CodexAdapter } from '../adapters/codex.js'
 import type { GitAdapter } from '../adapters/git.js'
 import type { GitHubAdapter } from '../adapters/github.js'
 import type { LinearAdapter } from '../adapters/linear.js'
@@ -26,6 +24,7 @@ import {
   messageOf,
   transitionGuardFailed,
 } from './errors.js'
+import { createPullRequestCheck } from './pull-request-check.js'
 import type { Store } from './store.js'
 import { createWorkTracker } from './work-tracker.js'
 
@@ -84,6 +83,19 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   const work = createWorkTracker()
   /** The live passes, so a stop or a shutdown can reach the process itself. */
   const passes = new Map<string, AbortController>()
+  const pullRequests = createPullRequestCheck({ git, github })
+
+  /**
+   * The Slot goes back whatever happened to the pass, and a Slot that could
+   * not be given back is worth saying out loud: it is a third of the machine.
+   */
+  const releaseSlot = (jobId: string): void => {
+    try {
+      store.endPass(jobId)
+    } catch (error) {
+      logger?.error({ err: error, jobId }, 'Could not release a job’s slot')
+    }
+  }
 
   /**
    * Keeps the row that says how to find a Codex process for exactly as long as
@@ -128,7 +140,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   }
 
   /**
-   * The slot is claimed by the transition, which has already committed by the
+   * The slot is claimed by `startPass`, which has already committed by the
    * time this is awaited — so the pass runs without holding up the next one,
    * and the store is what says how many slots are left.
    */
@@ -201,6 +213,7 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     } finally {
       codexProcess.release()
       passes.delete(job.id)
+      releaseSlot(job.id)
     }
   }
 
@@ -257,134 +270,15 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
   }
 
   /**
-   * Either the pull request Handella found, or why it accepted none. Both keys
-   * always present, as `Nullable` does everywhere else here, so the caller
-   * destructures rather than probing with `in`.
-   */
-  type Verification =
-    { reason: null; url: string } | { reason: string; url: null }
-
-  /**
-   * What Handella can see for itself, asked before it believes anything the
-   * agent reported. The worktree's HEAD first, because a pull request on some
-   * other branch is worse than none; then GitHub, which is the only authority
-   * on whether a pull request exists.
-   */
-  const verifyPullRequest = async (
-    job: StartableJob,
-  ): Promise<Verification> => {
-    const branch = job.canonicalBranch
-    if (branch === null) {
-      return {
-        reason: 'The job has no canonical branch to look for',
-        url: null,
-      }
-    }
-
-    const head = await git.headBranch(job.worktreePath)
-    if (head !== branch) {
-      return {
-        reason: `The worktree is on ${head} rather than ${branch}, so no pull request was accepted`,
-        url: null,
-      }
-    }
-
-    const pullRequest = await github.findPullRequest(job.worktreePath, branch)
-    if (pullRequest === null) {
-      return { reason: `No pull request was opened for ${branch}`, url: null }
-    }
-    if (pullRequest.state !== 'OPEN') {
-      return {
-        reason: `The pull request for ${branch} is ${pullRequest.state.toLowerCase()}`,
-        url: null,
-      }
-    }
-    if (pullRequest.isDraft) {
-      return {
-        reason: `The pull request for ${branch} is a draft rather than ready for review`,
-        url: null,
-      }
-    }
-    if (pullRequest.baseRefName !== job.baseBranch) {
-      return {
-        reason: `The pull request for ${branch} targets ${pullRequest.baseRefName} rather than ${job.baseBranch}`,
-        url: null,
-      }
-    }
-
-    return { reason: null, url: pullRequest.url }
-  }
-
-  /**
-   * What happens to the job now the turn is over.
+   * The one turn Handella takes, and what it does when it ends.
    *
-   * A repairable ending with budget left does nothing at all: the job stays in
-   * `implementing` holding its slot with no live pass, which is exactly what
-   * the orphan rule in `runOnce` starts the next turn from. Exhausting the
-   * budget is the only thing that suspends, which is also what stops that rule
-   * from starting a fourth.
+   * The ending is a record, not a verdict. Whatever the turn said, the job
+   * moves on only when GitHub shows an open pull request on its branch; short
+   * of that it stays `implementing`, unsuspended, with an item asking the
+   * Handler to pick the session up in their terminal. There is no repair turn:
+   * a turn that ends without a pull request hands the job to a person, not to
+   * another turn (docs/adr/0015).
    */
-  const settle = (
-    jobId: string,
-    attemptNumber: number,
-    outcome: ImplementationResult['outcome'],
-    reason: string,
-    url: string | null,
-  ): void => {
-    if (outcome === 'reportedDone' && url !== null) {
-      store.openPullRequest({ jobId, url })
-      return
-    }
-
-    // The Handler's own stop, and the one ending that is nobody's to answer:
-    // their suspension is already on the job, and the worktree keeps whatever
-    // the turn had written.
-    if (outcome === 'stopped') return
-
-    // `isRepairable` is the same rule `startAttempt` numbers rounds by, so a
-    // turn this leaves for another is a turn that one will grant. A wrong plan
-    // is not one: another turn would implement the same wrong plan again.
-    if (isRepairable(outcome) && attemptNumber < maxImplementationAttempts) {
-      return
-    }
-
-    store.failImplementation({ body: reason, jobId })
-  }
-
-  /** Why a turn that produced no pull request did not, in the Handler's words. */
-  const describeEnding = (
-    result: ImplementationResult,
-    verification: string | null,
-  ): string => {
-    if (result.outcome === 'reportedBlocked') {
-      const deviations = result.report?.planDeviations ?? []
-      const summary = result.report?.summary ?? ''
-      return [
-        'The agent stopped because the plan did not match the repository.',
-        ...(summary === '' ? [] : ['', summary]),
-        ...(deviations.length === 0
-          ? []
-          : ['', ...deviations.map((line) => `- ${line}`)]),
-      ].join('\n')
-    }
-
-    if (verification !== null) {
-      const unresolved = result.report?.unresolved ?? []
-      return [
-        verification,
-        ...(unresolved.length === 0
-          ? []
-          : [
-              '',
-              'The agent reported these as unresolved:',
-              ...unresolved.map((line) => `- ${line}`),
-            ]),
-      ].join('\n')
-    }
-
-    return result.failureReason ?? 'The turn ended without saying why'
-  }
-
   const runImplementationPass = async (job: StartableJob): Promise<void> => {
     const abort = new AbortController()
     passes.set(job.id, abort)
@@ -395,14 +289,16 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     /** Whether the turn's own ending is already on the row. */
     let finished = false
 
-    try {
-      if (job.linearIssueId === null) throw dispatchNeedsLinearIssue()
-      if (job.codexSessionId === null) throw codexSessionMissing(job.id)
+    const needsHandler = (body: string): void => {
+      store.requestHandlerInput({
+        body: `${body}\n\nOpen the session and finish the runbook there; Handella follows the session and moves the job when the pull request is open.`,
+        jobId: job.id,
+        title: 'Implementation needs you',
+      })
+    }
 
-      // Asked before the turn rather than after it. The agent opens the pull
-      // request, so a logged-out `gh` is otherwise discovered only once the work
-      // is done and has nowhere to go — and that costs a whole turn.
-      await github.checkAuth()
+    try {
+      if (job.codexSessionId === null) throw codexSessionMissing(job.id)
 
       // The snapshot rather than the active Runbook: this job approved against
       // what it said then, and the Handler may have rewritten it since.
@@ -412,9 +308,6 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
           'A job cannot be implemented without a runbook snapshot',
         )
       }
-
-      const issue = await linear.getIssue(job.linearIssueId)
-      const previous = store.latestAttempt(job.id)
 
       attempt = store.startAttempt({
         jobId: job.id,
@@ -434,8 +327,6 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 
       const started = attempt
       const result = await codex.implement({
-        attempt: started.attempt,
-        issue,
         job,
         onLine: (text) => {
           if (log !== undefined) writeSync(log, `${text}\n`)
@@ -449,11 +340,9 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
           announceProgress(job.id)
         },
         onSpawn: codexProcess.onSpawn,
-        round: started.round,
         runbook: snapshot.content,
         sessionId: job.codexSessionId,
         signal: abort.signal,
-        unresolved: previous?.report?.unresolved ?? [],
         worktreePath: job.worktreePath,
       })
 
@@ -461,48 +350,41 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       // reconciliation is the one thing that calls it interrupted.
       if (shuttingDown) return
 
-      // Closed before GitHub is asked anything. The report is the only record
-      // of what this turn did — and its `unresolved` list is the whole of the
-      // next turn's brief — so it is written down before a network call that
-      // can fail gets the chance to throw it away.
+      // Closed before GitHub is asked anything, so a network call that can
+      // fail cannot lose the record that a turn happened and how it ended.
       store.finishAttempt({
         attemptId: started.id,
         failureReason: result.failureReason,
         outcome: result.outcome,
-        report: result.report,
       })
       finished = true
 
-      let verified: Verification | undefined
-      let unverifiable: string | undefined
-      if (result.outcome === 'reportedDone') {
-        try {
-          verified = await verifyPullRequest(job)
-        } catch (error) {
-          unverifiable = messageOf(error)
-        }
-      }
+      // The Handler's own stop, and the one ending that is nobody's to answer:
+      // their suspension is already on the job, and the worktree keeps whatever
+      // the turn had written.
+      if (result.outcome === 'stopped') return
 
-      // Handella could not see whether the work landed, and another turn would
-      // not tell it: a repair turn answers a turn that went wrong, not a
-      // question Handella failed to ask. Asking the Handler is the cheaper of
-      // the two, and spends no budget on an answer nobody has.
-      if (unverifiable !== undefined) {
-        store.failImplementation({
-          body: `The turn finished, but Handella could not check whether a pull request exists: ${unverifiable}`,
-          jobId: job.id,
-        })
+      let verdict
+      try {
+        verdict = await pullRequests.verify(job)
+      } catch (error) {
+        // Handella could not see whether the work landed. Asking the Handler
+        // is the only honest answer to a question Handella failed to ask.
+        needsHandler(
+          `The turn ended, but Handella could not check whether a pull request exists: ${messageOf(error)}`,
+        )
         return
       }
 
-      const { reason, url } = verified ?? { reason: null, url: null }
+      if (verdict.url !== null) {
+        store.openPullRequest({ jobId: job.id, url: verdict.url })
+        return
+      }
 
-      settle(
-        job.id,
-        started.attempt,
-        result.outcome,
-        describeEnding(result, reason),
-        url,
+      needsHandler(
+        result.failureReason === null
+          ? verdict.reason
+          : `${verdict.reason}\n\n${result.failureReason}`,
       )
     } catch (error) {
       logger?.error({ err: error, jobId: job.id }, 'Implementation pass failed')
@@ -512,9 +394,10 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
 
       try {
         if (attempt === undefined) {
-          // Nothing was ever attempted, so nothing consumed budget — and a job
-          // left running would be started again immediately by the orphan rule,
-          // failing the same way forever. Stopping it is what breaks that.
+          // Nothing was ever attempted: the fault is Handella's own — no
+          // session, no snapshot, no log directory — and a job left running
+          // with no turn behind it would be one the Handler is never told
+          // about. Stopping it is what tells them.
           store.suspendJob({
             jobId: job.id,
             reason,
@@ -522,17 +405,16 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
           })
         } else {
           // Only if the turn's own ending was never written: a failure after
-          // that point is Handella's, and overwriting would discard the report
-          // the turn actually produced.
+          // that point is Handella's, and overwriting would discard how the
+          // turn actually ended.
           if (!finished) {
             store.finishAttempt({
               attemptId: attempt.id,
               failureReason: reason,
               outcome: 'failed',
-              report: null,
             })
           }
-          settle(job.id, attempt.attempt, 'failed', reason, null)
+          needsHandler(reason)
         }
       } catch (settleError) {
         logger?.error(
@@ -549,33 +431,10 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       log = undefined
       if (descriptor !== undefined) closeSync(descriptor)
       passes.delete(job.id)
-      if (!shuttingDown) {
-        flushProgress(job.id)
-        // Nothing this pass wrote necessarily published an event, so the next
-        // turn is asked for rather than waited for.
-        tick()
-      }
+      releaseSlot(job.id)
+      if (!shuttingDown) flushProgress(job.id)
     }
   }
-
-  /**
-   * A job mid-implementation with no live pass behind it. It already owns its
-   * slot — `isRunning` counts `implementing`, so `availableSlots` was debited
-   * before this tick ever ran — which is why it starts outside the budget and
-   * without a transition: its position has not changed, only the fact that
-   * nothing is running in it.
-   *
-   * There are exactly two ways to be one. Between repair turns, where the
-   * previous pass returned without suspending precisely because budget
-   * remained; and just after a Handler resumed a job that had run out, where a
-   * fresh round is what they asked for. Neither needs a budget check here: a
-   * job with nothing left is suspended, and a suspended job is not one of these.
-   */
-  const isOrphaned = (job: Job): job is StartableJob =>
-    job.suspension === null &&
-    job.state === 'implementing' &&
-    job.worktreePath !== null &&
-    !passes.has(job.id)
 
   /**
    * What the scheduler may start, in the order it prefers to start it.
@@ -590,29 +449,70 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
    */
   const startableKinds: readonly {
     from: JobState
+    pass: CodexPassKind
     ready: (job: Job) => job is StartableJob
     run: (job: StartableJob) => Promise<void>
     to: JobState
   }[] = [
     {
       from: 'approved',
+      pass: 'implement',
       ready: isImplementable,
       run: runImplementationPass,
       to: 'implementing',
     },
     {
       from: 'queued',
+      pass: 'plan',
       ready: isStartable,
       run: runPlanningPass,
       to: 'planning',
     },
   ]
 
-  const runOnce = (): void => {
-    const jobs = store.listJobs()
+  /**
+   * Asked before any implementation is claimed rather than after, because the
+   * agent opens the pull request and a logged-out `gh` would otherwise be
+   * discovered only once ninety minutes of work had nowhere to go. A job that
+   * fails it is stopped where it stands, in `approved`, so that `gh auth
+   * login` and a Resume are the whole of the recovery: the next tick claims it.
+   */
+  const preflightImplementations = async (jobs: Job[]): Promise<boolean> => {
+    const approved = jobs.filter(isImplementable)
+    if (approved.length === 0) return true
 
-    for (const job of jobs.filter(isOrphaned)) {
-      work.track(runImplementationPass(job))
+    try {
+      await github.checkAuth()
+      return true
+    } catch (error) {
+      const reason = messageOf(error)
+      for (const job of approved) {
+        try {
+          store.suspendJob({
+            jobId: job.id,
+            reason,
+            suspension: 'stoppedBySystem',
+          })
+        } catch (suspendError) {
+          logger?.error(
+            { err: suspendError, jobId: job.id },
+            'Could not stop a job whose pre-flight failed',
+          )
+        }
+      }
+      return false
+    }
+  }
+
+  const runOnce = async (): Promise<void> => {
+    let jobs = store.listJobs()
+
+    // Awaited only when there is something to ask about. An `await` yields
+    // even when the pre-flight has nothing to do, and the claims below have
+    // to happen synchronously from `start()` so the count a tick computed
+    // cannot be spent twice by a second tick that ran in the gap.
+    if (jobs.some(isImplementable) && !(await preflightImplementations(jobs))) {
+      jobs = store.listJobs()
     }
 
     const slots = availableSlots(jobs)
@@ -628,10 +528,10 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       try {
         // Synchronous and first: the slot is held from here, so the count this
         // pass computed cannot be spent twice.
-        store.transitionJob({
-          actor: 'system',
-          expectedState: kind.from,
+        store.startPass({
+          from: kind.from,
           jobId: job.id,
+          kind: kind.pass,
           to: kind.to,
         })
       } catch (error) {
@@ -644,6 +544,10 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     }
   }
 
+  /**
+   * One pass at a time, and a pass asked for during one runs straight after
+   * it. Tracked, so `whenIdle` waits for a tick that is still asking GitHub.
+   */
   const tick = (): void => {
     if (running) {
       again = true
@@ -651,14 +555,20 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
     }
 
     running = true
-    try {
-      do {
-        again = false
-        runOnce()
-      } while (again)
-    } finally {
-      running = false
-    }
+    work.track(
+      (async () => {
+        try {
+          do {
+            again = false
+            await runOnce()
+          } while (again)
+        } catch (error) {
+          logger?.error({ err: error }, 'A scheduler pass failed')
+        } finally {
+          running = false
+        }
+      })(),
+    )
   }
 
   return {

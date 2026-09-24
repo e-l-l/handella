@@ -31,7 +31,6 @@ describe('the implementation spine', () => {
         anAttempt({ endedAt: '2026-09-18T10:40:00.000Z', outcome: 'failed' }),
         anAttempt({
           id: 'cccccccc-e89b-42d3-a456-426614174000',
-          attempt: 2,
           startedAt: '2026-09-18T10:41:00.000Z',
         }),
       ],
@@ -50,24 +49,24 @@ describe('the implementation spine', () => {
     renderAt(`/jobs/${job.id}`)
 
     // The running turn is open; the one that is over stays closed until asked.
-    const running = await screen.findByText(/Attempt 2 of 3/)
+    // Two turns only because the job went back through the queue: ordinarily
+    // there is one, and it is called "Codex turn" with no count at all.
+    const running = await screen.findByText(/Turn 2 of 2/)
     expect(await screen.findByText('npm test')).toBeVisible()
 
-    const finished = screen.getByText(/Attempt 1 of 3/)
+    const finished = screen.getByText(/Turn 1 of 2/)
     expect(finished).toHaveTextContent('failed')
     expect(running).toBeInTheDocument()
   })
 
-  it('names the round once a Handler resume has started another', async () => {
+  it('calls the one turn a job ordinarily takes by name rather than by count', async () => {
     const job = anImplementingJob()
-    stubApi({
-      jobs: [job],
-      attempts: [anAttempt({ round: 2, attempt: 1 })],
-    })
+    stubApi({ jobs: [job], attempts: [anAttempt()] })
 
     renderAt(`/jobs/${job.id}`)
 
-    expect(await screen.findByText(/round 2/)).toBeVisible()
+    expect(await screen.findByText(/Codex turn/)).toBeVisible()
+    expect(screen.queryByText(/of 1/)).toBeNull()
   })
 
   /**
@@ -79,7 +78,7 @@ describe('the implementation spine', () => {
     const fetchMock = stubApi({ jobs: [job], attempts: [anAttempt()] })
 
     renderAt(`/jobs/${job.id}?tab=logs`)
-    await screen.findByText(/Attempt 1 of 3/)
+    await screen.findByText(/Codex turn/)
 
     const logRequests = () =>
       fetchMock.mock.calls.filter(([url]) => String(url).includes('/log'))
@@ -108,7 +107,7 @@ describe('the implementation spine', () => {
     const fetchMock = stubApi({ jobs: [job], attempts: [anAttempt()] })
 
     renderAt(`/jobs/${job.id}`)
-    await screen.findByText(/Attempt 1 of 3/)
+    await screen.findByText(/Codex turn/)
     const before = fetchMock.mock.calls.length
 
     latestEventSource().emit('job.progress', { jobId: job.id })
@@ -155,7 +154,7 @@ describe('a running job in the inbox', () => {
     // Read as text rather than by element: the line is assembled from several
     // spans, and what the Handler sees is the sentence they make together.
     await waitFor(() => {
-      expect(row?.textContent).toContain('attempt 1 of 3')
+      expect(row?.textContent).toContain('Codex turn')
       expect(row?.textContent).toContain('npm test · exit 1')
     })
   })

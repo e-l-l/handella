@@ -4,20 +4,30 @@ import { isQueued, isRunning, maxConcurrency, orderQueue } from './jobViews.ts'
 import { aJob } from './test/fixtures.ts'
 
 describe('the jobs holding a Codex slot', () => {
-  it('counts planning as running, because it is a Codex pass too', () => {
-    expect(isRunning(aJob({ state: 'planning' }))).toBe(true)
-    expect(isRunning(aJob({ state: 'implementing' }))).toBe(true)
+  it('counts a job with a Handella pass behind it, planning or implementing', () => {
+    expect(isRunning(aJob({ codexPass: 'plan', state: 'planning' }))).toBe(true)
+    expect(
+      isRunning(aJob({ codexPass: 'implement', state: 'implementing' })),
+    ).toBe(true)
   })
 
-  it('does not count a job that has not started or has finished', () => {
+  it('does not count a job the Handler is driving from their terminal', () => {
+    // Implementing, and nothing of Handella's is running in it: the slot is a
+    // fact about a pass, not about the state (ADR 0015).
+    expect(isRunning(aJob({ state: 'implementing' }))).toBe(false)
     expect(isRunning(aJob({ state: 'queued' }))).toBe(false)
     expect(isRunning(aJob({ state: 'prOpen' }))).toBe(false)
-    expect(isRunning(aJob({ state: 'merged' }))).toBe(false)
   })
 
-  it('frees the slot of a suspended job, whose worktree is only kept', () => {
+  it('frees the slot of a suspended job, whose pass is aborted', () => {
     expect(
-      isRunning(aJob({ state: 'implementing', suspension: 'interrupted' })),
+      isRunning(
+        aJob({
+          codexPass: 'implement',
+          state: 'implementing',
+          suspension: 'interrupted',
+        }),
+      ),
     ).toBe(false)
   })
 

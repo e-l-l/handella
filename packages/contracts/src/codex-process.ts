@@ -1,12 +1,12 @@
 /**
  * Which kind of pass a Codex process was spawned for. The two differ in what
- * they are allowed to do — a planning pass runs read-only and an implementing
- * one may write — so a leftover process of each kind is a different thing to
+ * they resume — a planning pass opens a fresh session and an implementing one
+ * continues it — so a leftover process of each kind is a different thing to
  * find, and Reconciliation says which it killed.
  *
  * Named for the pass rather than the Job's Lifecycle State: a Job in
- * `implementing` between repair turns has no process at all, and the row is
- * about the process.
+ * `implementing` that the Handler is driving from their terminal has no
+ * process of Handella's at all, and the row is about the process.
  */
 export const codexPassKinds = ['plan', 'implement'] as const
 

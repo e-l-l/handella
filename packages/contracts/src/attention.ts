@@ -10,6 +10,12 @@ import {
 /**
  * The decisions and outcomes the masterplan puts in front of the Handler.
  *
+ * `handlerInput` is Handella handing a Job to the Handler's terminal and
+ * waiting on what they do there: a plan it will not make unattended, an
+ * implementation turn that ended without a pull request, a session it can no
+ * longer follow. Not a blocker — nothing has stopped — and not a failure:
+ * Handella's part has ended and the Handler's has begun (docs/adr/0015).
+ *
  * `orphanWorktree` is the one Reconciliation raises, and it is a kind of its
  * own rather than a blocker: a blocker is a Job that has stopped, and an orphan
  * is residue on disk that no Job claims. Having its own kind is also what lets
@@ -24,6 +30,7 @@ export const attentionItemKinds = [
   'readyPr',
   'failure',
   'orphanWorktree',
+  'handlerInput',
 ] as const
 
 export type AttentionItemKind = (typeof attentionItemKinds)[number]

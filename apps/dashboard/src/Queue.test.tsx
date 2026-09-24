@@ -86,7 +86,12 @@ describe('the queue on the jobs list', () => {
    */
   it('says how many slots are in use, from the nav', async () => {
     stubApi({
-      jobs: [aQueuedJob(1), aJob({ id: 'running-1', state: 'planning' })],
+      jobs: [
+        aQueuedJob(1),
+        // A slot is a Handella pass, not a state: the planning job holds one
+        // because Handella's pass is behind it.
+        aJob({ codexPass: 'plan', id: 'running-1', state: 'planning' }),
+      ],
     })
 
     renderAt('/jobs')

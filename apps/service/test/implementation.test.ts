@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 
-import { maxImplementationAttempts } from '@handella/contracts'
+import { availableSlots, maxConcurrency } from '@handella/contracts'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type {
@@ -16,7 +16,6 @@ import {
   aDispatchedQueue,
   aJobAwaitingApproval,
   aPullRequest,
-  aReport,
   aTemporaryDirectory,
   anApprovedJob,
   cleanupTestContexts,
@@ -108,8 +107,7 @@ const anEnding = (
   overrides: Partial<ImplementationResult> = {},
 ): ImplementationResult => ({
   failureReason: null,
-  outcome: 'reportedDone',
-  report: aReport(),
+  outcome: 'finished',
   ...overrides,
 })
 
@@ -118,8 +116,17 @@ const openItems = (context: TestContext, jobId: string) =>
     .listAttentionItems()
     .filter((item) => item.jobId === jobId && item.resolvedAt === null)
 
+/** The one item a turn that ended without a pull request leaves behind. */
+const handoffFor = (context: TestContext, jobId: string) => {
+  const items = openItems(context, jobId).filter(
+    (item) => item.kind === 'handlerInput',
+  )
+  expect(items).toHaveLength(1)
+  return items[0]
+}
+
 describe('reaching a ready pull request', () => {
-  it('opens the pull request Handella found, not the one it was told about', async () => {
+  it('opens the pull request GitHub shows on the branch', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
     const branch = branchOf(context, jobId)
@@ -132,18 +139,18 @@ describe('reaching a ready pull request', () => {
         },
       }),
     })
-    // The agent claims a different pull request than the one that exists.
-    harness.codex.answerWith(
-      anEnding({
-        report: aReport({ pullRequestUrl: 'https://example.invalid/pr/1' }),
-      }),
-    )
 
     await harness.run()
 
     const job = context.store.getJob(jobId)
     expect(job.state).toBe('prOpen')
     expect(job.originalPrUrl).toBe('https://github.com/acme/monorepo/pull/99')
+    // The slot went back with the pass, and nothing is left asking for the
+    // Handler.
+    expect(job.codexPass).toBeNull()
+    expect(openItems(context, jobId).map((item) => item.kind)).toEqual([
+      'readyPr',
+    ])
   })
 
   it('implements in the session that planned', async () => {
@@ -180,8 +187,8 @@ describe('reaching a ready pull request', () => {
   })
 })
 
-describe('verification beating the report', () => {
-  it('does not reach prOpen when no pull request exists', async () => {
+describe('a turn that ends without a pull request', () => {
+  it('hands the job to the Handler rather than to another turn', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
     const harness = aHarness(context, [jobId])
@@ -189,9 +196,26 @@ describe('verification beating the report', () => {
 
     await harness.run()
 
+    // One turn, recorded as having ended, and no second one however long the
+    // scheduler is left to think about it.
+    expect(harness.codex.implementations).toHaveLength(1)
+    expect(context.store.listAttempts(jobId)).toMatchObject([
+      { outcome: 'finished' },
+    ])
+
+    // Not stopped, not suspended: the job is still implementing, in the
+    // Handler's terminal now rather than in Handella's pass.
     const job = context.store.getJob(jobId)
     expect(job.state).toBe('implementing')
+    expect(job.suspension).toBeNull()
     expect(job.originalPrUrl).toBeNull()
+    expect(job.codexPass).toBeNull()
+    expect(availableSlots(context.store.listJobs())).toBe(maxConcurrency)
+
+    const handoff = handoffFor(context, jobId)
+    expect(handoff?.title).toBe('Implementation needs you')
+    expect(handoff?.body).toContain('No pull request was opened')
+    expect(handoff?.body).toContain('Open the session')
   })
 
   it.each([
@@ -210,7 +234,8 @@ describe('verification beating the report', () => {
 
     await harness.run()
 
-    expect(context.store.getJob(jobId).state).not.toBe('prOpen')
+    expect(context.store.getJob(jobId).state).toBe('implementing')
+    expect(handoffFor(context, jobId)?.body).toContain('The pull request for')
   })
 
   it('never asks GitHub when the worktree is on the wrong branch', async () => {
@@ -224,96 +249,51 @@ describe('verification beating the report', () => {
 
     expect(harness.github.asked).toEqual([])
     expect(context.store.getJob(jobId).state).toBe('implementing')
+    expect(handoffFor(context, jobId)?.body).toContain('some-other-branch')
   })
-})
 
-describe('the bound on autonomous repair', () => {
-  it('takes three turns and then asks the Handler', async () => {
+  it('carries how a turn failed into the handoff', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
     const harness = aHarness(context, [jobId])
-    // Reports done every time, but no pull request ever appears.
-    harness.codex.answerWith(anEnding())
+    harness.codex.answerWith(
+      anEnding({ failureReason: 'Codex exited with 3', outcome: 'failed' }),
+    )
 
     await harness.run()
 
-    const attempts = context.store.listAttempts(jobId)
-    expect(attempts).toHaveLength(maxImplementationAttempts)
-    expect(attempts.map((attempt) => attempt.attempt)).toEqual([1, 2, 3])
-    expect(attempts.every((attempt) => attempt.round === 1)).toBe(true)
-
-    const job = context.store.getJob(jobId)
-    expect(job.state).toBe('implementing')
-    expect(job.suspension).toBe('stoppedBySystem')
-    expect(openItems(context, jobId).map((item) => item.kind)).toContain(
-      'failure',
-    )
+    expect(context.store.listAttempts(jobId)[0]).toMatchObject({
+      failureReason: 'Codex exited with 3',
+      outcome: 'failed',
+    })
+    expect(handoffFor(context, jobId)?.body).toContain('Codex exited with 3')
+    // A failed turn is not a suspended job: the worktree holds what the turn
+    // wrote, and the Handler picks the session up from there.
+    expect(context.store.getJob(jobId).suspension).toBeNull()
   })
 
-  it('stops at once when the plan turned out to be wrong', async () => {
+  it('asks nothing after a stop, which is the Handler’s own', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
     const harness = aHarness(context, [jobId])
     harness.codex.answerWith(
       anEnding({
-        outcome: 'reportedBlocked',
-        report: aReport({
-          outcome: 'blocked',
-          planDeviations: ['src/date.ts does not exist'],
-        }),
+        failureReason: 'Implementation was stopped',
+        outcome: 'stopped',
       }),
     )
 
     await harness.run()
 
-    expect(context.store.listAttempts(jobId)).toHaveLength(1)
-    expect(context.store.getJob(jobId).suspension).toBe('stoppedBySystem')
-    const failure = openItems(context, jobId).find(
-      (item) => item.kind === 'failure',
-    )
-    expect(failure?.body).toContain('src/date.ts does not exist')
-  })
-
-  it('gives a resumed job a fresh round rather than a fourth turn', async () => {
-    const context = createTestContext()
-    const jobId = await anApprovedJob(context)
-    const exhausting = aHarness(context, [jobId])
-    exhausting.codex.answerWith(anEnding())
-    await exhausting.run()
-
-    const branch = branchOf(context, jobId)
-    const resumed = aHarness(context, [jobId], {
-      github: createFakeGitHubAdapter({
-        pullRequests: { [branch]: aPullRequest() },
-      }),
-    })
-    context.store.resumeJob(jobId)
-    await resumed.run()
-
-    const attempts = context.store.listAttempts(jobId)
-    expect(attempts.at(-1)).toMatchObject({ attempt: 1, round: 2 })
-    expect(context.store.getJob(jobId).state).toBe('prOpen')
-  })
-
-  it('carries the previous turn’s unresolved work into the next brief', async () => {
-    const context = createTestContext()
-    const jobId = await anApprovedJob(context)
-    const harness = aHarness(context, [jobId])
-    harness.codex.answerWith(
-      anEnding({ report: aReport({ unresolved: ['npm test: 2 failures'] }) }),
-    )
-
-    await harness.run()
-
-    expect(harness.codex.implementations[0]?.unresolved).toEqual([])
-    expect(harness.codex.implementations[1]?.unresolved).toEqual([
-      'npm test: 2 failures',
-    ])
+    expect(harness.github.asked).toEqual([])
+    expect(
+      openItems(context, jobId).filter((item) => item.kind === 'handlerInput'),
+    ).toEqual([])
   })
 })
 
 describe('a GitHub Handella cannot reach', () => {
-  it('asks the Handler rather than spending a repair turn', async () => {
+  it('asks the Handler rather than guessing', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
     const github = createFakeGitHubAdapter()
@@ -321,36 +301,30 @@ describe('a GitHub Handella cannot reach', () => {
       throw githubUnavailable('gh pr list failed')
     }
     const harness = aHarness(context, [jobId], { github })
-    harness.codex.answerWith(anEnding())
 
     await harness.run()
 
-    // One turn, with the report it actually produced still on the row: the
-    // work may well have landed, and `unresolved` is the only brief a later
-    // turn would have.
-    const attempts = context.store.listAttempts(jobId)
-    expect(attempts).toHaveLength(1)
-    expect(attempts[0]).toMatchObject({ outcome: 'reportedDone' })
-    expect(attempts[0]?.report).not.toBeNull()
-
+    // The turn's own ending is on the row whatever GitHub did afterwards.
+    expect(context.store.listAttempts(jobId)).toMatchObject([
+      { outcome: 'finished' },
+    ])
     const job = context.store.getJob(jobId)
     expect(job.state).toBe('implementing')
-    expect(job.suspension).toBe('stoppedBySystem')
-    expect(
-      openItems(context, jobId).find((item) => item.kind === 'failure')?.body,
-    ).toContain('could not check whether a pull request exists')
+    expect(job.suspension).toBeNull()
+    expect(handoffFor(context, jobId)?.body).toContain(
+      'could not check whether a pull request exists',
+    )
   })
 })
 
 describe('an attempt that was never closed', () => {
-  it('is refused rather than granted a fresh round', async () => {
+  it('is refused rather than doubled', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
     const logRoot = aTemporaryDirectory('handella-logs-')
     context.store.startAttempt({ jobId, logRoot, sessionId: 'session-1' })
 
-    // Reading an open row as "not repairable" would open round 2, and the one
-    // after it round 3, for as long as whatever left it open lasts.
+    // Two open turns would be two agents in one session.
     expect(() =>
       context.store.startAttempt({ jobId, logRoot, sessionId: 'session-1' }),
     ).toThrow(/open implementation attempt/)
@@ -358,22 +332,33 @@ describe('an attempt that was never closed', () => {
 })
 
 describe('the GitHub pre-flight', () => {
-  it('spends no turn when gh is logged out', async () => {
+  it('spends no turn when gh is logged out, and claims once it is back', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
-    const github = createFakeGitHubAdapter()
+    const branch = branchOf(context, jobId)
+    const github = createFakeGitHubAdapter({
+      pullRequests: { [branch]: aPullRequest() },
+    })
     github.authenticated = false
-    const harness = aHarness(context, [jobId], { github })
 
-    await harness.run()
+    await aHarness(context, [jobId], { github }).run()
 
     expect(context.store.listAttempts(jobId)).toEqual([])
-    expect(harness.codex.implementations).toEqual([])
-    const job = context.store.getJob(jobId)
-    expect(job.suspension).toBe('stoppedBySystem')
+    // Stopped before it was claimed: still `approved`, holding no slot, so
+    // that `gh auth login` and a Resume are the whole of the recovery.
+    const stopped = context.store.getJob(jobId)
+    expect(stopped.state).toBe('approved')
+    expect(stopped.suspension).toBe('stoppedBySystem')
+    expect(stopped.codexPass).toBeNull()
     expect(openItems(context, jobId).map((item) => item.kind)).toContain(
       'blocker',
     )
+
+    github.authenticated = true
+    context.store.resumeJob(jobId)
+    await aHarness(context, [jobId], { github }).run()
+
+    expect(context.store.getJob(jobId).state).toBe('prOpen')
   })
 })
 
@@ -455,28 +440,50 @@ describe('slots', () => {
     expect(context.store.getJob(approved).state).toBe('prOpen')
   })
 
-  it('restarts a job left implementing with no pass behind it', async () => {
+  it('leaves a job the Handler is driving alone, and counts it against nothing', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
-    // What a stop mid-turn leaves behind: the job holds its slot and its
-    // position, and nothing is running in it.
+    // What a terminal approval looks like from here: implementing, with no
+    // pass of Handella's behind it.
     context.store.transitionJob({
       actor: 'system',
       jobId,
       to: 'implementing',
     })
+    expect(availableSlots(context.store.listJobs())).toBe(maxConcurrency)
 
-    const branch = branchOf(context, jobId)
-    const harness = aHarness(context, [jobId], {
-      github: createFakeGitHubAdapter({
-        pullRequests: { [branch]: aPullRequest() },
-      }),
-    })
-
+    const harness = aHarness(context, [jobId])
     await harness.run()
 
-    expect(harness.codex.implementations).toHaveLength(1)
-    expect(context.store.getJob(jobId).state).toBe('prOpen')
+    // No turn of Handella's is started on top of the Handler's session.
+    expect(harness.codex.implementations).toEqual([])
+    expect(context.store.getJob(jobId).state).toBe('implementing')
+  })
+
+  it('holds the slot for exactly as long as the pass runs', async () => {
+    const context = createTestContext()
+    const jobId = await anApprovedJob(context)
+
+    const claimed = context.store.startPass({
+      from: 'approved',
+      jobId,
+      kind: 'implement',
+      to: 'implementing',
+    })
+    expect(claimed).toMatchObject({
+      codexPass: 'implement',
+      state: 'implementing',
+    })
+    expect(availableSlots(context.store.listJobs())).toBe(maxConcurrency - 1)
+
+    context.store.endPass(jobId)
+
+    expect(context.store.getJob(jobId).codexPass).toBeNull()
+    expect(availableSlots(context.store.listJobs())).toBe(maxConcurrency)
+    // The freed slot is announced, because it is what the scheduler waits on.
+    expect(
+      context.published.filter((event) => event.name === 'job.changed').length,
+    ).toBeGreaterThan(0)
   })
 })
 
@@ -484,7 +491,12 @@ describe('a restart', () => {
   it('holds an interrupted implementation where it stands', async () => {
     const context = createTestContext()
     const jobId = await anApprovedJob(context)
-    context.store.transitionJob({ actor: 'system', jobId, to: 'implementing' })
+    context.store.startPass({
+      from: 'approved',
+      jobId,
+      kind: 'implement',
+      to: 'implementing',
+    })
     const attempt = context.store.startAttempt({
       jobId,
       logRoot: aTemporaryDirectory('handella-logs-'),
@@ -496,10 +508,33 @@ describe('a restart', () => {
     const job = context.store.getJob(jobId)
     expect(job.state).toBe('implementing')
     expect(job.suspension).toBe('interrupted')
+    // No pass survived the restart, so none holds a slot.
+    expect(job.codexPass).toBeNull()
     expect(context.store.listAttempts(jobId)[0]).toMatchObject({
       id: attempt.id,
       outcome: 'interrupted',
     })
     expect(context.store.listAttempts(jobId)[0]?.endedAt).not.toBeNull()
+  })
+
+  it('leaves alone an implementing job whose turn had already ended', async () => {
+    const context = createTestContext()
+    const jobId = await anApprovedJob(context)
+    context.store.transitionJob({ actor: 'system', jobId, to: 'implementing' })
+    const attempt = context.store.startAttempt({
+      jobId,
+      logRoot: aTemporaryDirectory('handella-logs-'),
+      sessionId: 'session-1',
+    })
+    context.store.finishAttempt({
+      attemptId: attempt.id,
+      failureReason: null,
+      outcome: 'finished',
+    })
+
+    // The Handler is finishing this one in their terminal; a restart of
+    // Handella interrupted nothing of theirs.
+    expect(context.store.markInterrupted()).toEqual([])
+    expect(context.store.getJob(jobId).suspension).toBeNull()
   })
 })

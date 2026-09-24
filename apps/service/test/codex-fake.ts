@@ -1,5 +1,3 @@
-import type { ImplementationReport } from '@handella/contracts'
-
 import type {
   CodexAdapter,
   ImplementationRequest,
@@ -7,19 +5,6 @@ import type {
   PlanningRequest,
   PlanningResult,
 } from '../src/adapters/codex.js'
-
-export const aReport = (
-  overrides: Partial<ImplementationReport> = {},
-): ImplementationReport => ({
-  outcome: 'completed',
-  summary: 'Awaited the session cookie and the login test settled.',
-  committed: true,
-  pullRequestUrl: 'https://github.com/acme/monorepo/pull/41',
-  checks: [{ command: 'npm test', passed: true, note: '' }],
-  unresolved: [],
-  planDeviations: [],
-  ...overrides,
-})
 
 export interface FakeCodexAdapter extends CodexAdapter {
   /** Every pass asked for, in order, so a test can assert what was sent. */
@@ -36,8 +21,8 @@ export interface FakeCodexAdapter extends CodexAdapter {
   /** One armed failure, spent by whichever pass reaches it first. */
   failNextWith(error: Error): void
   /**
-   * What the next turn answers with. Queued rather than set, so a test can
-   * line up a repair cycle as the sequence of endings it actually is.
+   * What the next turn answers with. Queued rather than set, so a test that
+   * runs a job through the queue twice can give each turn its own ending.
    */
   answerWith(...results: ImplementationResult[]): void
   /** Milestones every turn emits before it ends. */
@@ -104,15 +89,11 @@ export const createFakeCodexAdapter = (
         return Promise.reject(failure)
       }
 
-      // The queue is what a repair cycle is written as; once it runs out the
-      // fake keeps answering with its last word rather than changing behaviour.
+      // Once the queue runs out the fake keeps answering with its last word
+      // rather than changing behaviour.
       const answer = answers.length > 1 ? answers.shift() : answers[0]
       return Promise.resolve(
-        answer ?? {
-          failureReason: null,
-          outcome: 'reportedDone',
-          report: aReport(),
-        },
+        answer ?? { failureReason: null, outcome: 'finished' },
       )
     },
     plan(request): Promise<PlanningResult> {
@@ -188,7 +169,6 @@ export const anAbortableCodex = () => {
             resolve({
               failureReason: 'Implementation was stopped',
               outcome: 'stopped',
-              report: null,
             }),
           { once: true },
         )
@@ -212,10 +192,6 @@ export const aFailingCodex = (
 ): CodexAdapter => ({
   configured: true,
   implement: () =>
-    Promise.resolve({
-      failureReason: message,
-      outcome: 'failed',
-      report: null,
-    }),
+    Promise.resolve({ failureReason: message, outcome: 'failed' }),
   plan: () => Promise.reject(new Error(message)),
 })

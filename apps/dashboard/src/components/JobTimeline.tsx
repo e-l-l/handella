@@ -9,12 +9,12 @@ import { memo, useMemo, type ReactNode } from 'react'
 
 import { waitingSince } from '../jobPresentation.ts'
 import {
-  attemptLabel,
   attemptOutcomeLabel,
   formatClock,
   formatDuration,
   milestoneKindLabels,
   stateLabels,
+  turnLabel,
 } from '../labels.ts'
 
 /**
@@ -150,10 +150,10 @@ type SpineBeat =
  * stuck job needs is the last thing that happened, and it used to be at the
  * bottom of a list that grows all day.
  *
- * Interleaved by time rather than nested under a transition, because a round of
- * repair turns happens without the job moving at all: three attempts sit
- * between `approved -> implementing` and `implementing -> prOpen`, and a spine
- * that hung them off the transition could not say that.
+ * Interleaved by time rather than nested under a transition, because a turn
+ * happens without the job moving at all: it sits between
+ * `approved -> implementing` and `implementing -> prOpen`, and a spine that
+ * hung it off the transition could not say that.
  *
  * The raw logs used to be folded into each turn here. They are their own tab
  * now: a megabyte of JSONL is not a beat on a timeline.
@@ -181,6 +181,13 @@ export function JobTimeline({
     }
     return groups
   }, [milestones])
+
+  // Which turn each attempt is, in the order they ran: the label needs an
+  // ordinal and the rows arrive oldest first.
+  const ordinals = useMemo(
+    () => new Map(attempts.map((attempt, index) => [attempt.id, index + 1])),
+    [attempts],
+  )
 
   const beats: SpineBeat[] = useMemo(
     () =>
@@ -244,7 +251,7 @@ export function JobTimeline({
               node={
                 running
                   ? nodes.current
-                  : attempt.outcome === 'reportedDone'
+                  : attempt.outcome === 'finished'
                     ? nodes.passed
                     : nodes.ended
               }
@@ -252,9 +259,10 @@ export function JobTimeline({
               <BeatHead
                 at={attempt.startedAt}
                 current={running}
-                title={`${attemptLabel(attempt, 'Attempt')} · ${attemptOutcomeLabel(
-                  attempt,
-                )}`}
+                title={`${turnLabel(
+                  ordinals.get(attempt.id) ?? 1,
+                  attempts.length,
+                )} · ${attemptOutcomeLabel(attempt)}`}
               />
               {rows.length === 0 ? (
                 <p className={beatBodyClass}>

@@ -1,6 +1,6 @@
 import { Type, type Static } from 'typebox'
 
-import type { Job, JobState } from './job.js'
+import type { Job } from './job.js'
 import { UuidSchema } from './primitives.js'
 
 /** The masterplan's ceiling: three jobs may hold a Codex slot at once. */
@@ -46,14 +46,23 @@ export const codexIdleMs = 10 * 60_000
 export const mergeCheckIntervalMs = 5 * 60_000
 
 /**
- * A slot is held while Codex is working in a job's worktree. Planning counts:
- * it is a read-only Codex pass, and it occupies the machine the same way.
+ * A slot is held by a Handella pass and by nothing else: the Job whose row
+ * says a pass of Handella's is claiming it. A Job the Handler is driving from
+ * their own terminal holds none — the machine it occupies is theirs — and a
+ * Job held for the Handler to plan holds none either (docs/adr/0015). A
+ * suspended job holds nothing: its pass is aborted and its worktree kept.
  */
-const runningStates: readonly JobState[] = ['planning', 'implementing']
-
-/** A suspended job holds nothing — its worktree is kept, not worked in. */
 export const isRunning = (job: Job): boolean =>
-  job.suspension === null && runningStates.includes(job.state)
+  job.suspension === null && job.codexPass !== null
+
+/**
+ * Codex is working in the Job's worktree, whoever is driving it — Handella's
+ * pass or the Handler's terminal. What a list of work in flight shows, as
+ * against what `isRunning` counts against the ceiling.
+ */
+export const isInFlight = (job: Job): boolean =>
+  job.suspension === null &&
+  (job.state === 'planning' || job.state === 'implementing')
 
 /**
  * In the queue, which only Dispatch puts a job into: a job still in `intake`
