@@ -9,6 +9,16 @@ export interface TerminalRequest {
    */
   path: string
   /**
+   * A brief to start a new session with, rather than a session to resume.
+   *
+   * Set for a Job Handella declined to plan unattended: the window opens Codex
+   * in the worktree with the planning brief already typed, so the Handler adds
+   * the one thing Handella could not — the path to a video — and nothing else
+   * (docs/adr/0017). Never set together with `sessionId`: they are two
+   * different windows.
+   */
+  prompt: string | null
+  /**
    * The Codex session the window resumes, when the Job has one. Null until
    * planning has reported a session id, and the window is then a plain shell.
    */

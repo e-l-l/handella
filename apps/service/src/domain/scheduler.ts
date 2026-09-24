@@ -24,6 +24,7 @@ import {
   messageOf,
   transitionGuardFailed,
 } from './errors.js'
+import { describeVideoHold, findVideoReferences } from './media.js'
 import { createPullRequestCheck } from './pull-request-check.js'
 import type { SessionWatch } from './session-watch.js'
 import type { Store } from './store.js'
@@ -175,6 +176,21 @@ export function createScheduler(options: SchedulerOptions): Scheduler {
       // re-reads it: Linear owns the issue and the Handler may have rewritten
       // it since the job was taken.
       const issue = await linear.getIssue(job.linearIssueId)
+
+      // Declined rather than planned around: Codex takes images and not
+      // video, and a plan written without the recording the issue leans on is
+      // a plan about half an issue. The Job waits in `planning` holding no
+      // slot, for the Handler to plan it in a terminal where they can give
+      // Codex a local path (docs/adr/0017).
+      const videos = findVideoReferences(issue)
+      if (videos.length > 0) {
+        store.holdPlanningForHandler({
+          body: describeVideoHold(videos),
+          jobId: job.id,
+        })
+        return
+      }
+
       const runbook = store.activeRunbook()
 
       // Every planning pass is a fresh session. The plan is prose in that

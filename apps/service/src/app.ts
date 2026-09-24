@@ -129,6 +129,7 @@ export async function buildApp(options: BuildAppOptions) {
   })
   await app.register(jobRoutes, {
     dispatcher: options.dispatcher,
+    linear: options.linear,
     mergeCheck: options.mergeCheck,
     store: options.store,
     terminal: options.terminal,

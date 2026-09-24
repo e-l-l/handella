@@ -8,6 +8,12 @@ import type { Job, LinearIssueSummary } from '@handella/contracts'
  */
 
 export interface PlanningBrief {
+  /**
+   * The videos Handella could not hand to Codex, when there are any. Their
+   * presence is why the Handler is typing this brief into a session of their
+   * own rather than reading the plan a pass produced (docs/adr/0017).
+   */
+  handoff?: readonly { title: string | null; url: string }[] | undefined
   issue: LinearIssueSummary
   job: Job
   runbook: string
@@ -24,6 +30,19 @@ export const describeIssue = (issue: LinearIssueSummary): string =>
     `Linear: ${issue.url}`,
     '',
     issue.description ?? '(The issue has no description.)',
+    // Listed rather than fetched: Codex is in the worktree with the network
+    // open and can read anything here it is able to read.
+    ...(issue.attachments === null || issue.attachments.length === 0
+      ? []
+      : [
+          '',
+          'Attachments on the issue:',
+          ...issue.attachments.map((attachment) =>
+            attachment.title === null
+              ? `- ${attachment.url}`
+              : `- ${attachment.title} — ${attachment.url}`,
+          ),
+        ]),
   ].join('\n')
 
 /**
@@ -41,6 +60,16 @@ export const planningPrompt = (brief: PlanningBrief): string =>
     '',
     describeIssue(brief.issue),
     '',
+    ...(brief.handoff === undefined || brief.handoff.length === 0
+      ? []
+      : [
+          'The issue refers to a video Handella could not pass to you:',
+          ...brief.handoff.map((video) => `- ${video.url}`),
+          'The Handler is opening this session to give you a local path to it.',
+          'Ask for the path if it has not been given, watch it before you plan,',
+          'and treat what it shows as part of the issue.',
+          '',
+        ]),
     'The plan will be implemented in this same session, by you, following this',
     'runbook. Plan the work itself; do not restate the procedure below.',
     '',

@@ -37,7 +37,9 @@ describe('opening a terminal on a job’s codex session', () => {
     })
 
     expect(response.statusCode).toBe(204)
-    expect(terminal.opened()).toEqual([{ path: worktreePath, sessionId: null }])
+    expect(terminal.opened()).toEqual([
+      { path: worktreePath, prompt: null, sessionId: null },
+    ])
   })
 
   it('resumes the session of a job that has one', async () => {
@@ -53,7 +55,9 @@ describe('opening a terminal on a job’s codex session', () => {
     })
 
     expect(response.statusCode).toBe(204)
-    expect(terminal.opened()).toEqual([{ path: worktreePath, sessionId }])
+    expect(terminal.opened()).toEqual([
+      { path: worktreePath, prompt: null, sessionId },
+    ])
   })
 
   it('refuses a job whose worktree has not been cut, without opening anything', async () => {

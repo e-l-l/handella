@@ -23,6 +23,7 @@ export const aLinearIssue = (
   stateName: 'In Progress',
   stateType: 'started',
   updatedAt: '2026-09-18T10:00:00.000Z',
+  attachments: null,
   ...overrides,
 })
 
@@ -68,6 +69,12 @@ export interface FakeLinearAdapter extends LinearAdapter {
   readonly createCalls: CreateLinearIssueInput[]
   /** Team ids the routes asked for states of. */
   readonly stateCalls: string[]
+  /**
+   * Rewrites what Linear says about one issue, the way the Handler editing it
+   * would. Dispatch and every pass read the issue back rather than trusting
+   * what intake recorded, so this is how a test changes what they read.
+   */
+  describe(issueId: string, overrides: Partial<LinearIssueSummary>): void
 }
 
 interface FakeLinearAdapterOptions {
@@ -104,6 +111,12 @@ export function createFakeLinearAdapter(
     listCalls,
     createCalls,
     stateCalls,
+
+    describe(issueId, overrides) {
+      const index = issues.findIndex((candidate) => candidate.id === issueId)
+      if (index === -1) throw new Error(`The fake has no issue ${issueId}`)
+      issues[index] = { ...(issues[index] as LinearIssueSummary), ...overrides }
+    },
 
     async listAssignedActionableIssues(input) {
       listCalls.push(input)

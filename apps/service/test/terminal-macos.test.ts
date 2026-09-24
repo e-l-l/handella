@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   canonicalNameFor,
   createTerminalOpener,
+  launcherScript,
 } from '../src/adapters/terminal-macos.js'
 
 /**
@@ -37,7 +38,7 @@ describe('the terminal the Handler named', () => {
 
   it('is an error when it is not installed, rather than a quiet fallback', async () => {
     await expect(
-      anOpener().open({ path: worktreePath, sessionId: null }),
+      anOpener().open({ path: worktreePath, prompt: null, sessionId: null }),
     ).rejects.toMatchObject({
       code: 'terminal_unavailable',
       message: `HANDELLA_TERMINAL_APP names ${noSuchTerminal}, which is not installed`,
@@ -58,7 +59,11 @@ describe('a session id on its way to a command line', () => {
 
   it.each(refused)('refuses %s', async (_shape, candidate) => {
     await expect(
-      anOpener().open({ path: worktreePath, sessionId: candidate }),
+      anOpener().open({
+        path: worktreePath,
+        prompt: null,
+        sessionId: candidate,
+      }),
     ).rejects.toMatchObject({
       code: 'terminal_unavailable',
       message: expect.stringContaining('Codex session id'),
@@ -70,7 +75,11 @@ describe('a session id on its way to a command line', () => {
     // checked first — which is also what keeps a bad id from reaching a
     // window that has already opened.
     await expect(
-      anOpener().open({ path: worktreePath, sessionId: 'thr 412' }),
+      anOpener().open({
+        path: worktreePath,
+        prompt: null,
+        sessionId: 'thr 412',
+      }),
     ).rejects.toMatchObject({
       message: expect.stringContaining('Codex session id'),
     })
@@ -80,15 +89,56 @@ describe('a session id on its way to a command line', () => {
     // Past the guard and refused for the terminal instead, which is the only
     // way to say "the id was fine" without opening a window.
     await expect(
-      anOpener().open({ path: worktreePath, sessionId }),
+      anOpener().open({ path: worktreePath, prompt: null, sessionId }),
     ).rejects.toMatchObject({
       message: expect.stringContaining(noSuchTerminal),
     })
 
     await expect(
-      anOpener().open({ path: worktreePath, sessionId: 'thr_01HZY8Q.v2-3' }),
+      anOpener().open({
+        path: worktreePath,
+        prompt: null,
+        sessionId: 'thr_01HZY8Q.v2-3',
+      }),
     ).rejects.toMatchObject({
       message: expect.stringContaining(noSuchTerminal),
+    })
+  })
+})
+
+describe('the launcher a window is handed', () => {
+  it('reads every value it needs out of a file, and interpolates none', () => {
+    // The whole rule in one assertion: the script is a constant, so nothing a
+    // Handler wrote in an issue — quotes, newlines, `$(…)` — can become part
+    // of it. The brief and the session id arrive beside it (ADR 0011).
+    expect(launcherScript).toContain('cwd=$(cat "$dir/cwd")')
+    expect(launcherScript).toContain('prompt=$(cat "$dir/prompt")')
+    expect(launcherScript).toContain('session=$(cat "$dir/session")')
+    // One argv item each, so a brief with a space in it is still one argument.
+    expect(launcherScript).toContain('codex "$prompt"')
+    expect(launcherScript).toContain('codex resume "$session"')
+  })
+
+  it('chooses the brief or the session by which file is there', () => {
+    expect(launcherScript).toContain('if [ -f "$dir/prompt" ]; then')
+    expect(launcherScript).toContain('else')
+    expect(launcherScript).toContain('fi')
+  })
+})
+
+describe('a window that is asked to be two windows', () => {
+  it('is refused before a terminal is even looked for', async () => {
+    // A brief starts a conversation and a session id continues one; a caller
+    // asking for both has not decided which window it wants.
+    await expect(
+      anOpener().open({
+        path: worktreePath,
+        prompt: 'Plan this.',
+        sessionId,
+      }),
+    ).rejects.toMatchObject({
+      code: 'terminal_unavailable',
+      message: expect.stringContaining('not both'),
     })
   })
 })

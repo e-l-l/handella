@@ -65,6 +65,8 @@ const worktreeAbsence = (state: Job['state']): string => {
 
 /** What the session holds, and what opening or approving it does. */
 const sessionConsequence = (job: Job): string => {
+  if (job.hold === 'handlerPlanning')
+    return 'Handella will not plan this one unattended: it leans on a video Codex cannot be given. Opening the session starts Codex in the worktree with the planning brief already typed — add the local path to the recording, and Handella follows the session from there.'
   if (job.codexSessionId === null)
     return 'No session has been started. Dispatching starts one in the worktree, and the plan is proposed there.'
   if (job.state === 'implementing')

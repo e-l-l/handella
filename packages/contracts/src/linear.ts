@@ -81,6 +81,23 @@ export const LinearPrioritySchema = literalUnion(linearPriorities)
 export const isLinearPriority = isOneOf(linearPriorities)
 
 /**
+ * A file or link hanging off an issue.
+ *
+ * Handella reads these for one reason: to notice a video, which Codex cannot
+ * be given and which a plan written without it would be written around
+ * (docs/adr/0017). Nothing displays them.
+ */
+export const LinearAttachmentSchema = Type.Object(
+  {
+    title: Nullable(Type.String({ maxLength: 500 })),
+    url: Type.String({ minLength: 1, maxLength: 2048 }),
+  },
+  { additionalProperties: false },
+)
+
+export type LinearAttachment = Static<typeof LinearAttachmentSchema>
+
+/**
  * What intake needs to know about a Linear issue.
  *
  * `id` is what Handella stores and looks a Job up by, because it never
@@ -101,6 +118,13 @@ export const LinearIssueSummarySchema = Type.Object(
     stateName: Type.String({ minLength: 1, maxLength: 255 }),
     stateType: LinearWorkflowStateTypeSchema,
     updatedAt: Type.String({ minLength: 1, maxLength: 64 }),
+    /**
+     * Null means "not asked", which is what the intake list answers: an
+     * attachment is a second request per issue, and the list draws none of
+     * them. The read a Job is planned from asks, because that is where a video
+     * changes what Handella does.
+     */
+    attachments: Nullable(Type.Array(LinearAttachmentSchema)),
   },
   { additionalProperties: false, $id: 'LinearIssueSummary' },
 )

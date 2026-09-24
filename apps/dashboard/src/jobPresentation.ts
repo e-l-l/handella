@@ -71,8 +71,10 @@ export const jobGroup = (job: Job): JobGroup => {
   const group = groupByState[job.state]
   if (group === 'finished') return group
   // Before the state's own group: a suspended job in `implementing` is not
-  // running, and the whole point of the group is what it needs from you.
-  return job.suspension === null ? group : 'needsYou'
+  // running, and the whole point of the group is what it needs from you. A
+  // held job is `planning` and nothing is planning it, for the same reason.
+  if (job.suspension !== null || job.hold !== null) return 'needsYou'
+  return group
 }
 
 export const jobLane = (job: Job): JobLane => {
@@ -109,10 +111,13 @@ const stateTags: Record<JobState, { label: string; tone: Tone }> = {
  * else, and where it stopped is read from the timeline — or, in a list, from
  * the explanation line the row carries underneath itself.
  */
-export const jobTag = (job: Job): { label: string; tone: Tone } =>
-  job.suspension === null
-    ? stateTags[job.state]
-    : { label: 'suspended', tone: 'red' }
+export const jobTag = (job: Job): { label: string; tone: Tone } => {
+  if (job.suspension !== null) return { label: 'suspended', tone: 'red' }
+  // Held reads as `planning` otherwise, which would say Codex is working on
+  // it when the whole point is that nothing is.
+  if (job.hold !== null) return { label: 'needs planning', tone: 'amber' }
+  return stateTags[job.state]
+}
 
 /**
  * Why this row is under `NEEDS YOU`, in one sentence that says what is being
@@ -125,6 +130,8 @@ export const needsYouReason = (job: Job): string | null => {
   // which is the one thing about this state a Handler has to be told.
   if (job.state === 'intake')
     return 'This job holds its issue but has claimed no branch and cut no worktree. Dispatching claims the canonical branch, cuts the worktree and puts it in the queue.'
+  if (job.hold === 'handlerPlanning')
+    return 'This issue leans on a video Handella cannot hand to Codex. Download it and open the session: Codex starts in the worktree with the planning brief already typed, and you add the path to the recording.'
   if (job.state === 'planReview')
     return 'The plan is in the Codex session. Open the session to read it and approve here when it is right; nothing is written to the branch until you do.'
   if (job.state === 'prOpen')
@@ -142,6 +149,8 @@ export const needsYouReason = (job: Job): string | null => {
  */
 export const needsYouHeading = (job: Job): string | null => {
   if (job.suspension !== null) return suspensionHeadings[job.suspension]
+  if (job.hold === 'handlerPlanning')
+    return 'Waiting on you — this one needs planning in a terminal'
   if (job.state === 'intake') return 'Not dispatched yet'
   if (job.state === 'planReview')
     return 'Waiting on you — the plan needs an answer'
@@ -162,6 +171,8 @@ export const needsYouHeading = (job: Job): string | null => {
 export const waitingSince = (job: Job): string | null => {
   if (job.suspension !== null)
     return 'Stopped here. Resuming picks up from this point in the same worktree.'
+  if (job.hold === 'handlerPlanning')
+    return 'Held for you to plan in a terminal, because of a video Handella cannot read.'
   if (job.state === 'intake')
     return 'Taken, and not yet dispatched. Dispatching cuts the worktree and queues it.'
   if (job.state === 'planReview')
@@ -180,6 +191,8 @@ export const waitingSince = (job: Job): string | null => {
  */
 export const jobAction = (job: Job): JobActionKind => {
   if (job.suspension !== null) return 'resume'
+  // The one thing that moves a held job is the Handler opening its session.
+  if (job.hold !== null) return 'openSession'
   if (job.state === 'intake') return 'dispatch'
   if (job.state === 'planReview') return 'reviewPlan'
   if (job.state === 'prOpen' || job.state === 'reviewing') return 'reviewPr'

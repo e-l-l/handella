@@ -19,9 +19,12 @@ import {
 import { createReadStream, statSync } from 'node:fs'
 import { Transform } from 'node:stream'
 
+import type { LinearAdapter } from '../adapters/linear.js'
 import type { TerminalOpener } from '../adapters/terminal.js'
 import type { Dispatcher } from '../domain/dispatch.js'
 import { worktreeNotCut } from '../domain/errors.js'
+import { findVideoReferences } from '../domain/media.js'
+import { planningPrompt } from '../domain/prompts.js'
 import type { MergeCheck } from '../domain/merge-check.js'
 import type { Store } from '../domain/store.js'
 
@@ -74,11 +77,12 @@ const errorResponses = {
 
 export const jobRoutes: FastifyPluginCallbackTypebox<{
   dispatcher: Dispatcher
+  linear: LinearAdapter
   mergeCheck: MergeCheck
   store: Store
   terminal: TerminalOpener
 }> = (app, options, done) => {
-  const { dispatcher, mergeCheck, store, terminal } = options
+  const { dispatcher, linear, mergeCheck, store, terminal } = options
 
   /**
    * The whole order rather than one job's position: reordering a list by
@@ -171,9 +175,29 @@ export const jobRoutes: FastifyPluginCallbackTypebox<{
       const job = store.getJob(request.params.jobId)
       if (job.worktreePath === null) throw worktreeNotCut(job.id)
 
+      // A Job Handella declined to plan opens Codex on the brief it would have
+      // sent, so the Handler adds the path to the video and nothing else. Read
+      // from Linear here for the reason every pass reads it there: the issue
+      // is Linear's, and the Handler may have rewritten it (docs/adr/0017).
+      const brief =
+        job.hold === null ||
+        job.codexSessionId !== null ||
+        job.linearIssueId === null
+          ? null
+          : await (async () => {
+              const issue = await linear.getIssue(job.linearIssueId ?? '')
+              return planningPrompt({
+                handoff: findVideoReferences(issue),
+                issue,
+                job,
+                runbook: store.activeRunbook().content,
+              })
+            })()
+
       await terminal.open({
         path: job.worktreePath,
-        sessionId: job.codexSessionId,
+        prompt: brief,
+        sessionId: brief === null ? job.codexSessionId : null,
       })
       return reply.code(204).send(null)
     },

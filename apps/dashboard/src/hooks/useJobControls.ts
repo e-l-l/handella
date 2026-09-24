@@ -159,7 +159,9 @@ export function useJobControls(job: Job): JobControls {
     kind: 'openSession',
     label: terminal.isPending
       ? 'Opening…'
-      : job.codexSessionId === null
+      : // A held job has no session yet and is not getting a shell either: the
+        // window opens Codex on the brief Handella declined to send itself.
+        job.codexSessionId === null && job.hold === null
         ? 'Open terminal'
         : 'Open session',
   } as const

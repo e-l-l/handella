@@ -90,25 +90,46 @@ const checkSessionId = (sessionId: string): void => {
  * `exec` replaces the shell and takes the trap with it — which is why the
  * removal is also written out before it.
  */
-const launcherScript = [
+export const launcherScript = [
   '#!/bin/sh',
   '# Written by Handella to open a Codex session. Safe to delete.',
   'dir=$(dirname "$0")',
   'trap \'rm -rf "$dir"\' EXIT HUP INT TERM',
   'cwd=$(cat "$dir/cwd") || exit 1',
-  'session=$(cat "$dir/session") || exit 1',
   'cd "$cwd" || exit 1',
-  'codex resume "$session"',
+  'if [ -f "$dir/prompt" ]; then',
+  '  prompt=$(cat "$dir/prompt") || exit 1',
+  '  codex "$prompt"',
+  'else',
+  '  session=$(cat "$dir/session") || exit 1',
+  '  codex resume "$session"',
+  'fi',
   'rm -rf "$dir"',
   'exec "${SHELL:-/bin/sh}" -l',
   '',
 ].join('\n')
 
-const writeLauncher = (cwd: string, sessionId: string): string => {
+/**
+ * The files the launcher reads, and the launcher itself.
+ *
+ * A brief is written to a file for the reason the session id is: the script's
+ * text is a constant, and the values it needs arrive beside it rather than
+ * inside it. `"$prompt"` then reaches `codex` as a single argv item however
+ * many quotes, newlines or `$(…)` the brief happens to contain — Handella
+ * composes it out of an issue the Handler wrote, so it contains whatever they
+ * wrote (docs/adr/0011).
+ */
+const writeLauncher = (request: TerminalRequest): string => {
   const directory = mkdtempSync(join(tmpdir(), 'handella-terminal-'))
   const launcher = join(directory, 'open-session')
-  writeFileSync(join(directory, 'cwd'), cwd, { mode: 0o600 })
-  writeFileSync(join(directory, 'session'), sessionId, { mode: 0o600 })
+  writeFileSync(join(directory, 'cwd'), request.path, { mode: 0o600 })
+  if (request.prompt === null) {
+    writeFileSync(join(directory, 'session'), request.sessionId ?? '', {
+      mode: 0o600,
+    })
+  } else {
+    writeFileSync(join(directory, 'prompt'), request.prompt, { mode: 0o600 })
+  }
   writeFileSync(launcher, launcherScript, { mode: 0o700 })
   return launcher
 }
@@ -128,9 +149,9 @@ const openWithOpen = async (
   request: TerminalRequest,
 ): Promise<void> => {
   const document =
-    request.sessionId === null
+    request.prompt === null && request.sessionId === null
       ? request.path
-      : writeLauncher(request.path, request.sessionId)
+      : writeLauncher(request)
 
   await run('open', ['-a', application, document], {
     timeout: launchTimeoutMs,
@@ -181,6 +202,15 @@ export const createTerminalOpener = (
   options: TerminalOptions = {},
 ): TerminalOpener => ({
   async open(request) {
+    // Two different windows: one resumes the conversation a Job is already in,
+    // the other starts the conversation it has not had yet. Asking for both at
+    // once is a caller that has not decided which.
+    if (request.prompt !== null && request.sessionId !== null) {
+      throw terminalUnavailable(
+        'A terminal opens either a session to resume or a brief to start, not both',
+      )
+    }
+
     // Checked before anything is launched, so a bad id is reported as itself
     // rather than as the terminal having failed to open.
     if (request.sessionId !== null) checkSessionId(request.sessionId)

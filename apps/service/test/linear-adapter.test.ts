@@ -41,6 +41,9 @@ const anSdkIssue = (overrides: Record<string, unknown> = {}) => ({
   branchName: 'ell/eng-412-fix-flaky-login-test',
   updatedAt: new Date('2026-09-18T10:00:00.000Z'),
   state: Promise.resolve({ name: 'In Progress', type: 'started' }),
+  // A lazy relation, the way the SDK serves it: only the read a job is
+  // planned from asks for it.
+  attachments: () => Promise.resolve({ nodes: [] }),
   assigneeId: 'viewer-1',
   ...overrides,
 })
@@ -151,6 +154,9 @@ describe('listing assigned actionable issues', () => {
         stateName: 'In Progress',
         stateType: 'started',
         updatedAt: '2026-09-18T10:00:00.000Z',
+        // Not asked for: the list draws none of them, and asking would be a
+        // request per issue.
+        attachments: null,
       },
     ])
     expect(page.nextCursor).toBeNull()

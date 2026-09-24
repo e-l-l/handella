@@ -115,6 +115,7 @@ const guard = async <Result>(work: () => Promise<Result>): Promise<Result> => {
  */
 const toIssueSummary = async (
   issue: Issue,
+  options: { withAttachments?: boolean } = {},
 ): Promise<LinearIssueSummary | undefined> => {
   const state = await issue.state
 
@@ -127,7 +128,18 @@ const toIssueSummary = async (
     return undefined
   }
 
+  // Only where it matters: this is a request per issue, and the only reader is
+  // the check for a video the Handler has to hand to Codex themselves.
+  const attachments =
+    options.withAttachments === true
+      ? ((await issue.attachments()).nodes ?? []).map((attachment) => ({
+          title: attachment.title === '' ? null : attachment.title,
+          url: attachment.url,
+        }))
+      : null
+
   return {
+    attachments,
     id: issue.id,
     identifier: issue.identifier,
     title: issue.title,
@@ -207,7 +219,13 @@ export function createLinearAdapter(
           filter,
         })
 
-        const issues = await Promise.all(page.nodes.map(toIssueSummary))
+        // Called through an arrow rather than passed directly, so `map`'s
+        // index cannot arrive where the attachment option goes. The list asks
+        // for no attachments: one request per issue for something no row
+        // displays would double what drawing the list costs.
+        const issues = await Promise.all(
+          page.nodes.map((issue) => toIssueSummary(issue)),
+        )
 
         return {
           // The filter is server-side; this is belt and braces, so nothing
@@ -236,7 +254,7 @@ export function createLinearAdapter(
 
         // Strict here, unlike the list: this is the read a job is built from,
         // and a job on an issue Handella cannot describe is worse than none.
-        const summary = await toIssueSummary(issue)
+        const summary = await toIssueSummary(issue, { withAttachments: true })
         if (summary === undefined) {
           throw linearUnavailable(
             new Error(`Linear returned an unusable issue ${issueId}`),
